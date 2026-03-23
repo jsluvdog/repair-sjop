@@ -1,0 +1,1500 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="维修记录">
+<meta name="theme-color" content="#09090b">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>维修记录管理</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body,#root{height:100%;background:#09090b}
+body{font-family:'Noto Sans SC',-apple-system,BlinkMacSystemFont,sans-serif;color:#e4e4e7;overflow-x:hidden;
+  padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom);
+  padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right)}
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+@keyframes spin{to{transform:rotate(360deg)}}
+button{font-family:inherit;cursor:pointer;-webkit-appearance:none}
+button:active{opacity:0.7;transition:opacity 0.1s}
+input,textarea,select{font-family:inherit;-webkit-appearance:none;appearance:none}
+input:focus,textarea:focus,select:focus{outline:none;border-color:rgba(96,165,250,0.5)!important;box-shadow:0 0 0 2px rgba(96,165,250,0.15)!important}
+::placeholder{color:#52525b}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.08);border-radius:2px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script type="text/babel">
+const { useState, useEffect, useMemo, useCallback } = React;
+
+// ─── Cloud Storage (JSONBin + localStorage cache) ─────────
+const STORAGE_KEY = "shop-records-v3";
+const CONFIG_KEY = "shop-cloud-config";
+
+// Config: { apiKey, binId }
+function getCloudConfig() {
+  try { return JSON.parse(localStorage.getItem(CONFIG_KEY)) || null; } catch { return null; }
+}
+function setCloudConfig(cfg) {
+  localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg));
+}
+
+// Local cache
+function loadLocalCache() {
+  try { const d = localStorage.getItem(STORAGE_KEY); return d ? JSON.parse(d) : null; } catch { return null; }
+}
+function saveLocalCache(data) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch(e) { console.error("Local save:", e); }
+}
+
+// JSONBin API
+async function cloudLoad(cfg) {
+  const res = await fetch(`https://api.jsonbin.io/v3/b/${cfg.binId}/latest`, {
+    headers: { "X-Access-Key": cfg.apiKey }
+  });
+  if (!res.ok) throw new Error("Cloud load failed: " + res.status);
+  const json = await res.json();
+  return json.record || {};
+}
+
+async function cloudSave(cfg, data) {
+  const res = await fetch(`https://api.jsonbin.io/v3/b/${cfg.binId}`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Access-Key": cfg.apiKey
+    },
+    body: JSON.stringify(data)
+  });
+  if (!res.ok) throw new Error("Cloud save failed: " + res.status);
+  return true;
+}
+
+async function cloudCreateBin(apiKey) {
+  const res = await fetch("https://api.jsonbin.io/v3/b", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Access-Key": apiKey,
+      "X-Bin-Name": "repair-shop-data",
+      "X-Bin-Private": "true"
+    },
+    body: JSON.stringify({})
+  });
+  if (!res.ok) throw new Error("Create bin failed: " + res.status);
+  const json = await res.json();
+  return json.metadata.id;
+}
+
+// Debounced cloud save
+let _saveTimer = null;
+function debouncedCloudSave(cfg, data) {
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(async () => {
+    try { await cloudSave(cfg, data); } catch(e) { console.error("Cloud sync:", e); }
+  }, 800);
+}
+
+// Combined load: try cloud first, fall back to local cache
+async function loadRecords() {
+  const cfg = getCloudConfig();
+  if (cfg?.apiKey && cfg?.binId) {
+    try {
+      const data = await cloudLoad(cfg);
+      saveLocalCache(data); // update local cache
+      return data;
+    } catch(e) {
+      console.warn("Cloud load failed, using local cache:", e);
+      return loadLocalCache();
+    }
+  }
+  return loadLocalCache();
+}
+
+// Combined save: save locally + sync to cloud
+function saveRecords(data) {
+  saveLocalCache(data);
+  const cfg = getCloudConfig();
+  if (cfg?.apiKey && cfg?.binId) {
+    debouncedCloudSave(cfg, data);
+  }
+}
+
+// Export data as data.json file download
+function exportDataJSON(data) {
+  const json = JSON.stringify(data, null, 2);
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "data.json";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// Import data from a data.json file
+function importDataJSON(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try { resolve(JSON.parse(e.target.result)); } catch(err) { reject(err); }
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(file);
+  });
+}
+
+// ─── Date Helpers ─────────────────────────────────────────
+const WEEKDAYS = ["周日","周一","周二","周三","周四","周五","周六"];
+
+function getMondayOfWeek(date) {
+  const d = new Date(date);
+  const day = d.getDay();
+  d.setDate(d.getDate() - ((day === 0 ? 7 : day) - 1));
+  d.setHours(0,0,0,0);
+  return d;
+}
+
+function getWeekDates(mondayDate) {
+  const dates = [];
+  for (let i = 0; i < 6; i++) {
+    const d = new Date(mondayDate);
+    d.setDate(mondayDate.getDate() + i);
+    dates.push(d.toISOString().slice(0, 10));
+  }
+  return dates;
+}
+
+function fmtDate(ds) {
+  const d = new Date(ds + "T00:00:00");
+  return `${d.getMonth()+1}月${d.getDate()}日 ${WEEKDAYS[d.getDay()]}`;
+}
+
+function fmtWeekRange(dates) {
+  const s = new Date(dates[0] + "T00:00:00");
+  const e = new Date(dates[dates.length-1] + "T00:00:00");
+  return `${s.getMonth()+1}/${s.getDate()} — ${e.getMonth()+1}/${e.getDate()}`;
+}
+
+function isToday(ds) { return ds === new Date().toISOString().slice(0, 10); }
+function isThisWeek(monday) {
+  const now = getMondayOfWeek(new Date());
+  return monday.getTime() === now.getTime();
+}
+
+function sumItems(arr) {
+  return (arr || []).reduce((s, i) => s + (Number(i.cost) || 0) * (Number(i.qty) || 1), 0);
+}
+function uid() { return "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+
+// ─── Icons ────────────────────────────────────────────────
+const Icon = ({ d, size = 18, sw = 1.8 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round"><path d={d}/></svg>
+);
+const IBack = () => <Icon d="M15 4L9 12L15 20" size={18} sw={2.2}/>;
+const IPlus = () => <Icon d="M12 5v14M5 12h14" size={16} sw={2.2}/>;
+const IEdit = () => <Icon d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" size={15}/>;
+const IDel = () => <Icon d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" size={15}/>;
+const ICar = () => <Icon d="M5 17h14M5 17a2 2 0 01-2-2v-4l2.5-5h13L21 11v4a2 2 0 01-2 2M5 17a2 2 0 100 4 2 2 0 000-4zm14 0a2 2 0 100 4 2 2 0 000-4z"/>;
+const IHistory = () => <Icon d="M3 3v5h5M3 8a9 9 0 1018 0 9 9 0 00-18 0zM12 7v5l3 3" size={16}/>;
+const ISave = () => <Icon d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2zM17 21v-8H7v8M7 3v5h8" size={15}/>;
+const IClose = () => <Icon d="M18 6L6 18M6 6l12 12" size={16} sw={2.2}/>;
+const IWrench = () => <Icon d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z" size={13}/>;
+const ITag = () => <Icon d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82zM7 7h.01" size={13}/>;
+const IClock = () => <Icon d="M12 2a10 10 0 100 20 10 10 0 000-20zM12 6v6l4 2" size={13}/>;
+const IChevronR = () => <Icon d="M9 6l6 6-6 6" size={14} sw={2}/>;
+const IChevronL = () => <Icon d="M15 6l-6 6 6 6" size={14} sw={2}/>;
+const IReset = () => <Icon d="M1 4v6h6M23 20v-6h-6M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15" size={14}/>;
+const IHome = () => <Icon d="M3 12l9-9 9 9M5 10v10a1 1 0 001 1h3a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1h3a1 1 0 001-1V10" size={14}/>;
+const IGear = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>;
+const IWarn = () => <Icon d="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" size={18}/>;
+
+// ─── Main App ─────────────────────────────────────────────
+function App() {
+  const [records, setRecords] = useState(null);
+  const [currentMonday, setCurrentMonday] = useState(() => getMondayOfWeek(new Date()));
+  const [view, setView] = useState("week");
+  const [selDate, setSelDate] = useState(null);
+  const [selRecord, setSelRecord] = useState(null);
+  const [selVehicleId, setSelVehicleId] = useState(null);
+  const [editingRecord, setEditingRecord] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [cloudCfg, setCloudCfg] = useState(() => getCloudConfig());
+  const [syncStatus, setSyncStatus] = useState("idle"); // idle | syncing | ok | error
+  const [needSetup, setNeedSetup] = useState(() => !getCloudConfig());
+
+  const weekDates = useMemo(() => getWeekDates(currentMonday), [currentMonday]);
+  const thisWeek = isThisWeek(currentMonday);
+
+  // Load records
+  useEffect(() => {
+    (async () => {
+      setSyncStatus("syncing");
+      try {
+        const saved = await loadRecords();
+        setRecords(saved || {});
+        setSyncStatus(cloudCfg ? "ok" : "idle");
+      } catch(e) {
+        console.error(e);
+        setRecords(loadLocalCache() || {});
+        setSyncStatus("error");
+      }
+      setLoaded(true);
+    })();
+  }, [cloudCfg]);
+
+  // Save on change
+  useEffect(() => {
+    if (records && loaded) {
+      saveLocalCache(records);
+      if (cloudCfg?.apiKey && cloudCfg?.binId) {
+        setSyncStatus("syncing");
+        clearTimeout(_saveTimer);
+        _saveTimer = setTimeout(async () => {
+          try {
+            await cloudSave(cloudCfg, records);
+            setSyncStatus("ok");
+          } catch(e) {
+            console.error("Sync error:", e);
+            setSyncStatus("error");
+          }
+        }, 800);
+      }
+    }
+  }, [records, loaded]);
+
+  // Manual refresh from cloud
+  const refreshFromCloud = useCallback(async () => {
+    if (!cloudCfg) return;
+    setSyncStatus("syncing");
+    try {
+      const data = await cloudLoad(cloudCfg);
+      saveLocalCache(data);
+      setRecords(data);
+      setSyncStatus("ok");
+    } catch(e) {
+      setSyncStatus("error");
+    }
+  }, [cloudCfg]);
+
+  const allRecords = useMemo(() => records ? Object.values(records).flat() : [], [records]);
+
+  const vehicleHistory = useMemo(() => {
+    if (!selVehicleId) return [];
+    return allRecords.filter(r => r.vehicleId === selVehicleId).sort((a, b) => a.date.localeCompare(b.date));
+  }, [selVehicleId, allRecords]);
+
+  const goWeek = () => { setView("week"); setSelDate(null); setSelRecord(null); setSelVehicleId(null); setShowForm(false); };
+  const goDay = (d) => { setSelDate(d); setView("day"); setSelRecord(null); setShowForm(false); };
+  const goRecord = (r) => { setSelRecord(r); setView("record"); setShowForm(false); };
+  const goVehicleHistory = (vid) => { setSelVehicleId(vid); setView("vehicleHistory"); };
+
+  const prevWeek = () => {
+    const d = new Date(currentMonday);
+    d.setDate(d.getDate() - 7);
+    setCurrentMonday(d);
+    goWeek();
+  };
+  const nextWeek = () => {
+    const d = new Date(currentMonday);
+    d.setDate(d.getDate() + 7);
+    setCurrentMonday(d);
+    goWeek();
+  };
+  const goThisWeek = () => {
+    setCurrentMonday(getMondayOfWeek(new Date()));
+    goWeek();
+  };
+
+  const handleSaveRecord = useCallback((rec, isNew) => {
+    setRecords(prev => {
+      const next = { ...prev };
+      const dateKey = rec.date;
+      if (!next[dateKey]) next[dateKey] = [];
+      if (isNew) {
+        next[dateKey] = [...next[dateKey], rec];
+      } else {
+        Object.keys(next).forEach(dk => { next[dk] = next[dk].filter(r => r.id !== rec.id); });
+        if (!next[dateKey]) next[dateKey] = [];
+        next[dateKey] = [...next[dateKey], rec];
+      }
+      // Clean empty
+      Object.keys(next).forEach(dk => { if (next[dk].length === 0) delete next[dk]; });
+      return next;
+    });
+    setShowForm(false);
+    setSelRecord(rec);
+    setView("record");
+    setSelDate(rec.date);
+  }, []);
+
+  const handleDeleteRecord = useCallback((rec) => {
+    setRecords(prev => {
+      const next = { ...prev };
+      Object.keys(next).forEach(dk => { next[dk] = next[dk].filter(r => r.id !== rec.id); });
+      Object.keys(next).forEach(dk => { if (next[dk].length === 0) delete next[dk]; });
+      return next;
+    });
+    setSelRecord(null);
+    setView("day");
+  }, []);
+
+  const handleReset = useCallback(async () => {
+    setRecords({});
+    goWeek();
+  }, []);
+
+  const handleImport = useCallback((data) => {
+    setRecords(data);
+    goWeek();
+  }, []);
+
+  if (!loaded && !needSetup) {
+    return <div style={S.root}><div style={S.loadingWrap}><div style={S.spinner}/><p style={{color:"#71717a",marginTop:12,fontSize:13}}>正在同步云端数据...</p></div></div>;
+  }
+
+  if (needSetup) {
+    return <CloudSetup onComplete={(cfg) => {
+      setCloudConfig(cfg);
+      setCloudCfg(cfg);
+      setNeedSetup(false);
+    }} />;
+  }
+
+  const syncDot = syncStatus === "syncing" ? "#fbbf24" : syncStatus === "ok" ? "#4ade80" : syncStatus === "error" ? "#f87171" : "#52525b";
+  const syncLabel = syncStatus === "syncing" ? "同步中..." : syncStatus === "ok" ? "已同步" : syncStatus === "error" ? "同步失败" : "本地";
+
+  return (
+    <div style={S.root}>
+      <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+      <style>{`
+        @keyframes fadeUp { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+        @keyframes spin { to { transform:rotate(360deg); } }
+        @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+        button:hover { filter: brightness(1.15); }
+        input:focus, textarea:focus, select:focus { outline:none; border-color:rgba(96,165,250,0.5)!important; box-shadow:0 0 0 2px rgba(96,165,250,0.15)!important; }
+        ::placeholder { color: #52525b; }
+        ::-webkit-scrollbar { width:6px; } ::-webkit-scrollbar-track { background:transparent; } ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.08); border-radius:3px; }
+      `}</style>
+
+      <header style={S.header}>
+        <div style={S.headerInner}>
+          {view !== "week" && view !== "settings" && !showForm && (
+            <button style={S.navBtn} onClick={() => {
+              if (view === "vehicleHistory") goRecord(selRecord);
+              else if (view === "record") goDay(selDate);
+              else goWeek();
+            }}><IBack/></button>
+          )}
+          {view === "settings" && (
+            <button style={S.navBtn} onClick={goWeek}><IBack/></button>
+          )}
+          {showForm && (
+            <button style={S.navBtn} onClick={() => { setShowForm(false); setEditingRecord(null); }}><IClose/></button>
+          )}
+          <div style={{flex:1}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <h1 style={S.title}>
+                {showForm ? (editingRecord?.id ? "编辑记录" : "新增记录") :
+                 view === "week" ? "维修记录" :
+                 view === "day" ? fmtDate(selDate) :
+                 view === "record" ? "记录详情" :
+                 view === "settings" ? "设置" : "车辆历史"}
+              </h1>
+              {/* Sync indicator */}
+              {view === "week" && !showForm && (
+                <button onClick={refreshFromCloud} style={{background:"none",border:"none",display:"flex",alignItems:"center",gap:4,padding:"2px 6px",borderRadius:6,cursor:"pointer"}} title={"点击刷新 · " + syncLabel}>
+                  <div style={{width:7,height:7,borderRadius:"50%",background:syncDot,animation:syncStatus==="syncing"?"pulse 1s infinite":"none"}}/>
+                  <span style={{fontSize:10,color:"#52525b",fontFamily:"'IBM Plex Mono',monospace"}}>{syncLabel}</span>
+                </button>
+              )}
+            </div>
+            {view === "week" && !showForm && (
+              <p style={S.subtitle}>{fmtWeekRange(weekDates)} {thisWeek ? "· 本周" : ""}</p>
+            )}
+            {view !== "week" && view !== "settings" && !showForm && (
+              <p style={S.subtitle}>
+                {view === "day" ? `共 ${(records[selDate]||[]).length} 条记录` :
+                 view === "record" ? selRecord?.vehicle :
+                 vehicleHistory[0]?.vehicle || ""}
+              </p>
+            )}
+            {view === "settings" && <p style={S.subtitle}>数据管理</p>}
+            {showForm && <p style={S.subtitle}>{selDate ? fmtDate(selDate) : "选择日期"}</p>}
+          </div>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            {view === "week" && !showForm && (
+              <>
+                <button style={S.navBtn} onClick={prevWeek} title="上一周"><IChevronL/></button>
+                {!thisWeek && <button style={{...S.navBtn,padding:"0 8px",fontSize:11,width:"auto",gap:3}} onClick={goThisWeek} title="回到本周"><IHome/><span>本周</span></button>}
+                <button style={S.navBtn} onClick={nextWeek} title="下一周"><IChevronR/></button>
+                <div style={{width:1,height:20,background:"rgba(255,255,255,0.06)",margin:"0 2px"}}/>
+                <button style={S.navBtn} onClick={()=>setView("settings")} title="设置"><IGear/></button>
+              </>
+            )}
+            {(view === "day" && !showForm) && (
+              <button style={S.addBtn} onClick={() => { setEditingRecord(null); setShowForm(true); }}>
+                <IPlus/><span style={{marginLeft:4}}>新增</span>
+              </button>
+            )}
+          </div>
+        </div>
+      </header>
+
+      <main style={S.main}>
+        {showForm ? (
+          <RecordForm
+            initial={editingRecord}
+            defaultDate={selDate}
+            allRecords={allRecords}
+            onSave={handleSaveRecord}
+            onCancel={() => { setShowForm(false); setEditingRecord(null); }}
+          />
+        ) : (
+          <>
+            {view === "week" && <WeekView dates={weekDates} data={records} onSelect={goDay}/>}
+            {view === "day" && <DayView records={records[selDate]||[]} onSelect={goRecord}/>}
+            {view === "record" && selRecord && (
+              <RecordDetail
+                record={selRecord}
+                onViewHistory={goVehicleHistory}
+                onEdit={() => { setEditingRecord(selRecord); setShowForm(true); }}
+                onDelete={() => handleDeleteRecord(selRecord)}
+              />
+            )}
+            {view === "vehicleHistory" && (
+              <VehicleHistoryView
+                history={vehicleHistory}
+                currentId={selRecord?.id}
+                onSelect={(r) => { setSelRecord(r); setSelDate(r.date); setView("record"); }}
+              />
+            )}
+            {view === "settings" && (
+              <SettingsView onReset={handleReset} totalRecords={allRecords.length} records={records} onImport={handleImport} cloudCfg={cloudCfg} onCloudDisconnect={() => { localStorage.removeItem(CONFIG_KEY); setCloudCfg(null); setNeedSetup(true); }} onRefresh={refreshFromCloud} syncStatus={syncStatus}/>
+            )}
+          </>
+        )}
+      </main>
+    </div>
+  );
+}
+
+// ─── Week View ────────────────────────────────────────────
+function WeekView({ dates, data, onSelect }) {
+  // Weekly totals
+  const weekTotals = useMemo(() => {
+    let q=0, inv=0, np=0, h=0, count=0;
+    dates.forEach(d => {
+      (data[d]||[]).forEach(r => {
+        q += Number(r.quoted||0);
+        inv += sumItems(r.inventoryUsed);
+        np += sumItems(r.newParts);
+        h += Number(r.hours||0);
+        count++;
+      });
+    });
+    return { q, inv, np, h, count, profit: q - inv - np };
+  }, [dates, data]);
+
+  return (
+    <div>
+      {/* Week summary bar */}
+      {weekTotals.count > 0 && (
+        <div style={S.weekSummary}>
+          <div style={S.wsStat}><span style={S.wsLabel}>本周总计</span><span style={S.wsCount}>{weekTotals.count} 单</span></div>
+          {/* Profit hero */}
+          <div style={{textAlign:"center",padding:"10px 0 14px",marginBottom:12,borderBottom:"1px solid rgba(255,255,255,0.05)"}}>
+            <span style={{fontSize:11,color:weekTotals.profit>=0?"#4ade80":"#f87171",display:"block",marginBottom:2}}>本周利润</span>
+            <span style={{fontSize:28,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace",color:weekTotals.profit>=0?"#4ade80":"#f87171"}}>${weekTotals.profit.toLocaleString()}</span>
+          </div>
+          <div style={S.wsNumbers}>
+            <div><span style={S.wsSmLabel}>收入</span><span style={S.wsGreen}>${weekTotals.q.toLocaleString()}</span></div>
+            <div><span style={S.wsSmLabel}>成本</span><span style={S.wsMuted}>${(weekTotals.inv+weekTotals.np).toLocaleString()}</span></div>
+            <div><span style={S.wsSmLabel}>工时</span><span style={S.wsMuted}>{weekTotals.h}h</span></div>
+          </div>
+        </div>
+      )}
+      <div style={S.cardGrid}>
+        {dates.map((d, i) => {
+          const recs = data[d] || [];
+          const totalQ = recs.reduce((s,r)=>s+Number(r.quoted||0),0);
+          const totalInv = recs.reduce((s,r)=>s+sumItems(r.inventoryUsed),0);
+          const totalNew = recs.reduce((s,r)=>s+sumItems(r.newParts),0);
+          const totalH = recs.reduce((s,r)=>s+(Number(r.hours)||0),0);
+          const dayProfit = totalQ - totalInv - totalNew;
+          const today = isToday(d);
+          return (
+            <button key={d} style={{...S.dayCard, animationDelay:`${i*60}ms`, ...(today?S.dayCardToday:{})}} onClick={()=>onSelect(d)}>
+              <div style={S.dayCardHeader}>
+                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                  <span style={S.dayCardDate}>{fmtDate(d)}</span>
+                  {today && <span style={S.todayBadge}>今天</span>}
+                </div>
+                <span style={S.dayCardCount}>{recs.length}</span>
+              </div>
+              {recs.length > 0 ? (
+                <>
+                  {/* Profit highlight */}
+                  <div style={{marginBottom:10,padding:"8px 10px",borderRadius:8,background:dayProfit>=0?"rgba(74,222,128,0.06)":"rgba(248,113,113,0.06)",border:dayProfit>=0?"1px solid rgba(74,222,128,0.12)":"1px solid rgba(248,113,113,0.12)"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <span style={{fontSize:11.5,color:dayProfit>=0?"#4ade80":"#f87171"}}>当日利润</span>
+                      <span style={{fontSize:15,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace",color:dayProfit>=0?"#4ade80":"#f87171"}}>${dayProfit.toLocaleString()}</span>
+                    </div>
+                  </div>
+                  <div style={S.dayCardBody}>
+                    <div style={S.statRow}><span style={S.statLabel}>报价收入</span><span style={S.valGreen}>${totalQ.toLocaleString()}</span></div>
+                    <div style={S.statRow}><span style={S.statLabel}>库存出库</span><span style={S.valMuted}>${totalInv.toLocaleString()}</span></div>
+                    <div style={S.statRow}><span style={S.statLabel}>新购配件</span><span style={S.valMuted}>${totalNew.toLocaleString()}</span></div>
+                    <div style={{...S.statRow,borderTop:"1px solid rgba(255,255,255,0.05)",paddingTop:7,marginTop:3}}>
+                      <span style={S.statLabel}>工时</span><span style={S.valMuted}>{totalH}h</span>
+                    </div>
+                  </div>
+                  <div style={S.dayCardFooter}>
+                    {recs.slice(0,3).map(r=>(
+                      <span key={r.id} style={S.vehicleChip}>{(r.vehicle||"").split("·")[0].trim().split(" ").slice(0,3).join(" ")}</span>
+                    ))}
+                    {recs.length > 3 && <span style={S.chipMore}>+{recs.length-3}</span>}
+                  </div>
+                </>
+              ) : (
+                <div style={{padding:"14px 0 4px",textAlign:"center"}}>
+                  <span style={{fontSize:12,color:"#3f3f46"}}>暂无记录</span>
+                </div>
+              )}
+              <div style={S.dayCardArrow}><IChevronR/></div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── Day View ─────────────────────────────────────────────
+function DayView({ records, onSelect }) {
+  if (records.length === 0) {
+    return (
+      <div style={S.emptyState}>
+        <ICar/>
+        <p style={{color:"#52525b",margin:"12px 0 0",fontSize:14}}>当天暂无记录</p>
+        <p style={{color:"#3f3f46",margin:"4px 0 0",fontSize:12}}>点击右上角「新增」添加</p>
+      </div>
+    );
+  }
+
+  const dayTotals = useMemo(() => {
+    let q=0, inv=0, np=0, h=0;
+    records.forEach(r => {
+      q += Number(r.quoted||0);
+      inv += sumItems(r.inventoryUsed);
+      np += sumItems(r.newParts);
+      h += Number(r.hours||0);
+    });
+    return { q, inv, np, h, profit: q - inv - np };
+  }, [records]);
+
+  return (
+    <div style={S.listCol}>
+      {/* Daily summary */}
+      <div style={{...S.weekSummary,animation:"fadeUp 0.25s ease both"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+          <span style={{fontSize:13,fontWeight:500,color:"#fafafa"}}>当日汇总</span>
+          <span style={{fontSize:12,fontFamily:"'IBM Plex Mono',monospace",color:"#a1a1aa",background:"rgba(255,255,255,0.05)",padding:"2px 8px",borderRadius:6}}>{records.length} 单</span>
+        </div>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"center",padding:"6px 0 12px",marginBottom:10,borderBottom:"1px solid rgba(255,255,255,0.05)"}}>
+          <div style={{textAlign:"center"}}>
+            <span style={{fontSize:11,color:dayTotals.profit>=0?"#4ade80":"#f87171",display:"block",marginBottom:2}}>当日利润</span>
+            <span style={{fontSize:26,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace",color:dayTotals.profit>=0?"#4ade80":"#f87171"}}>${dayTotals.profit.toLocaleString()}</span>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:16,flexWrap:"wrap",justifyContent:"center"}}>
+          <span style={{fontSize:12,color:"#71717a"}}>收入 <span style={{color:"#4ade80",fontFamily:"'IBM Plex Mono',monospace"}}>${dayTotals.q.toLocaleString()}</span></span>
+          <span style={{fontSize:12,color:"#71717a"}}>成本 <span style={{color:"#a1a1aa",fontFamily:"'IBM Plex Mono',monospace"}}>${(dayTotals.inv+dayTotals.np).toLocaleString()}</span></span>
+          <span style={{fontSize:12,color:"#71717a"}}>工时 <span style={{color:"#a1a1aa",fontFamily:"'IBM Plex Mono',monospace"}}>{dayTotals.h}h</span></span>
+        </div>
+      </div>
+
+      {records.map((r,i) => {
+        const inv = sumItems(r.inventoryUsed);
+        const np = sumItems(r.newParts);
+        return (
+          <button key={r.id} style={{...S.recordCard, animationDelay:`${i*50}ms`}} onClick={()=>onSelect(r)}>
+            <div style={S.rcTop}>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <span style={S.badge(r.type)}>{r.type==="repair"?"维修":"出售"}</span>
+                <span style={S.custName}>{r.customer}</span>
+              </div>
+              <span style={S.rcQuoted}>${Number(r.quoted||0).toLocaleString()}</span>
+            </div>
+            <div style={S.rcVehicle}><ICar/><span style={{marginLeft:6}}>{r.vehicle}</span></div>
+            <div style={S.rcMeta}>
+              <span style={S.metaI}><IWrench/> 库存 ${inv}</span>
+              <span style={S.metaI}><ITag/> 新购 ${np}</span>
+              <span style={S.metaI}><IClock/> {r.hours}h</span>
+            </div>
+            {r.note && <p style={S.rcNote}>{r.note}</p>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Record Detail ────────────────────────────────────────
+function RecordDetail({ record: r, onViewHistory, onEdit, onDelete }) {
+  const [confirmDel, setConfirmDel] = useState(false);
+  const inv = sumItems(r.inventoryUsed);
+  const np = sumItems(r.newParts);
+  const profit = Number(r.quoted||0) - inv - np;
+
+  return (
+    <div style={S.detailCol}>
+      <div style={S.detailTop}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+          <div>
+            <span style={S.badge(r.type)}>{r.type==="repair"?"维修":"出售"}</span>
+            <h2 style={S.detailCust}>{r.customer}</h2>
+            <p style={S.detailVeh}>{r.vehicle}</p>
+            <p style={S.detailDateText}>{fmtDate(r.date)}</p>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <span style={{fontSize:11,color:"#71717a"}}>报价收入</span>
+            <div style={S.detailBigQ}>${Number(r.quoted||0).toLocaleString()}</div>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:8,marginTop:16,flexWrap:"wrap"}}>
+          <button style={S.actionBtn} onClick={onEdit}><IEdit/><span style={{marginLeft:5}}>编辑</span></button>
+          <button style={{...S.actionBtn,...S.dangerBtn}} onClick={()=>setConfirmDel(true)}><IDel/><span style={{marginLeft:5}}>删除</span></button>
+          <button style={{...S.actionBtn,flex:1}} onClick={()=>onViewHistory(r.vehicleId)}><IHistory/><span style={{marginLeft:5}}>该车历史</span></button>
+        </div>
+        {confirmDel && (
+          <div style={S.confirmBar}>
+            <span style={{fontSize:13,color:"#f87171"}}>确认删除？</span>
+            <div style={{display:"flex",gap:8}}>
+              <button style={S.confirmYes} onClick={onDelete}>确认</button>
+              <button style={S.confirmNo} onClick={()=>setConfirmDel(false)}>取消</button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div style={S.section}>
+        <h3 style={S.secTitle}>费用明细</h3>
+        {(r.inventoryUsed||[]).length > 0 && (
+          <div style={{marginBottom:16}}>
+            <p style={S.subLabel}>库存出库（已在仓库）</p>
+            {r.inventoryUsed.map((it,i)=>(
+              <div key={i} style={S.lineItem}><span>{it.item} x{it.qty}</span><span style={S.lineCost}>${(it.cost*it.qty).toLocaleString()}</span></div>
+            ))}
+            <div style={S.lineTotal}><span>小计</span><span>${inv.toLocaleString()}</span></div>
+          </div>
+        )}
+        {(r.newParts||[]).length > 0 && (
+          <div style={{marginBottom:16}}>
+            <p style={S.subLabel}>新购配件支出（新购入的）</p>
+            {r.newParts.map((it,i)=>(
+              <div key={i} style={S.lineItem}><span>{it.item} x{it.qty}</span><span style={S.lineCost}>${(it.cost*it.qty).toLocaleString()}</span></div>
+            ))}
+            <div style={S.lineTotal}><span>小计</span><span>${np.toLocaleString()}</span></div>
+          </div>
+        )}
+        {(r.inventoryUsed||[]).length===0 && (r.newParts||[]).length===0 && (
+          <p style={{color:"rgba(255,255,255,0.25)",fontSize:13}}>无配件记录</p>
+        )}
+        <div style={S.profitRow}>
+          <div><span style={S.profitLabel}>利润</span><span style={S.profitSub}>(报价 - 库存 - 新购)</span></div>
+          <span style={{...S.profitVal,color:profit>=0?"#4ade80":"#f87171"}}>${profit.toLocaleString()}</span>
+        </div>
+      </div>
+
+      <div style={S.section}>
+        <div style={{display:"flex",gap:24}}>
+          <div>
+            <p style={S.subLabel}>工作时长</p>
+            <p style={S.bigNum}>{r.hours}<span style={S.bigUnit}>小时</span></p>
+          </div>
+        </div>
+        {r.note && (
+          <div style={{marginTop:16,paddingTop:16,borderTop:"1px solid rgba(255,255,255,0.06)"}}>
+            <p style={S.subLabel}>备注</p>
+            <p style={S.noteText}>{r.note}</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Vehicle History ──────────────────────────────────────
+function VehicleHistoryView({ history, currentId, onSelect }) {
+  return (
+    <div style={S.listCol}>
+      {history.map((r,i) => {
+        const cur = r.id === currentId;
+        const inv = sumItems(r.inventoryUsed);
+        const np = sumItems(r.newParts);
+        return (
+          <div key={r.id} style={{display:"flex",gap:14,animation:"fadeUp 0.35s ease both",animationDelay:`${i*50}ms`}}>
+            <div style={{display:"flex",flexDirection:"column",alignItems:"center",paddingTop:18,width:18,flexShrink:0}}>
+              <div style={{width:cur?12:8,height:cur?12:8,borderRadius:"50%",background:cur?"#60a5fa":"rgba(255,255,255,0.15)",border:cur?"2px solid rgba(96,165,250,0.3)":"none",flexShrink:0}}/>
+              {i<history.length-1 && <div style={{width:1,flex:1,background:"rgba(255,255,255,0.08)",marginTop:4}}/>}
+            </div>
+            <button style={{...S.recordCard,flex:1,marginBottom:0,...(cur?{border:"1px solid rgba(96,165,250,0.3)",background:"rgba(59,130,246,0.06)"}:{})}} onClick={()=>onSelect(r)}>
+              <div style={S.rcTop}>
+                <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                  <span style={{fontSize:13,fontFamily:"'IBM Plex Mono',monospace",color:"#d4d4d8"}}>{fmtDate(r.date)}</span>
+                  <span style={S.badge(r.type)}>{r.type==="repair"?"维修":"出售"}</span>
+                  {cur && <span style={S.curBadge}>当前</span>}
+                </div>
+                <span style={S.rcQuoted}>${Number(r.quoted||0).toLocaleString()}</span>
+              </div>
+              <div style={S.rcMeta}>
+                <span style={S.metaI}><IWrench/> 库存 ${inv}</span>
+                <span style={S.metaI}><ITag/> 新购 ${np}</span>
+                <span style={S.metaI}><IClock/> {r.hours}h</span>
+              </div>
+              {r.note && <p style={S.rcNote}>{r.note}</p>}
+            </button>
+          </div>
+        );
+      })}
+      <div style={{...S.section,marginTop:16}}>
+        <h3 style={S.secTitle}>车辆累计</h3>
+        <div style={{display:"flex",gap:28,flexWrap:"wrap"}}>
+          <div><p style={S.subLabel}>总次数</p><p style={S.bigNum}>{history.length}<span style={S.bigUnit}>次</span></p></div>
+          <div><p style={S.subLabel}>总收入</p><p style={{...S.bigNum,color:"#4ade80"}}>${history.reduce((s,r)=>s+Number(r.quoted||0),0).toLocaleString()}</p></div>
+          <div><p style={S.subLabel}>总工时</p><p style={S.bigNum}>{history.reduce((s,r)=>s+(Number(r.hours)||0),0)}<span style={S.bigUnit}>h</span></p></div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Record Form ──────────────────────────────────────────
+function RecordForm({ initial, defaultDate, allRecords, onSave, onCancel }) {
+  const isEdit = !!initial?.id;
+  const [form, setForm] = useState(() => {
+    if (initial) return { ...initial, inventoryUsed: initial.inventoryUsed?.length ? initial.inventoryUsed : [], newParts: initial.newParts?.length ? initial.newParts : [] };
+    return { id: uid(), vehicleId: "", date: defaultDate || new Date().toISOString().slice(0,10), type: "repair", customer: "", vehicle: "", inventoryUsed: [], newParts: [], quoted: "", hours: "", note: "" };
+  });
+
+  useEffect(() => {
+    if (!isEdit && form.vehicle) {
+      const vid = "V-" + form.vehicle.replace(/[^a-zA-Z0-9]/g,"").slice(0,12).toUpperCase();
+      setForm(f => ({...f, vehicleId: vid}));
+    }
+  }, [form.vehicle, isEdit]);
+
+  const existingVehicles = useMemo(() => {
+    const map = {};
+    allRecords.forEach(r => { if (r.vehicle && r.vehicleId) map[r.vehicle] = { vehicleId: r.vehicleId, customer: r.customer }; });
+    return map;
+  }, [allRecords]);
+
+  const set = (k, v) => setForm(f => ({...f, [k]: v}));
+  const addItem = (field) => setForm(f => ({...f, [field]: [...f[field], {item:"", qty:1, cost:""}]}));
+  const removeItem = (field, idx) => setForm(f => ({...f, [field]: f[field].filter((_,i)=>i!==idx)}));
+  const updateItem = (field, idx, key, val) => setForm(f => { const arr=[...f[field]]; arr[idx]={...arr[idx],[key]:val}; return {...f,[field]:arr}; });
+
+  const handleVehicleSelect = (veh) => {
+    const info = existingVehicles[veh];
+    if (info) setForm(f => ({...f, vehicle: veh, vehicleId: info.vehicleId, customer: f.customer || info.customer}));
+  };
+
+  const handleSubmit = () => {
+    if (!form.customer.trim() || !form.vehicle.trim()) return;
+    const cleaned = { ...form, quoted: Number(form.quoted)||0, hours: Number(form.hours)||0,
+      inventoryUsed: form.inventoryUsed.filter(i=>i.item.trim()).map(i=>({...i, qty:Number(i.qty)||1, cost:Number(i.cost)||0})),
+      newParts: form.newParts.filter(i=>i.item.trim()).map(i=>({...i, qty:Number(i.qty)||1, cost:Number(i.cost)||0})),
+    };
+    if (!cleaned.vehicleId) cleaned.vehicleId = "V-" + Date.now().toString(36).toUpperCase();
+    onSave(cleaned, !isEdit);
+  };
+
+  const vehicleSuggestions = useMemo(() => {
+    if (!form.vehicle || form.vehicle.length < 2) return [];
+    return Object.keys(existingVehicles).filter(v => v.toLowerCase().includes(form.vehicle.toLowerCase())).slice(0, 5);
+  }, [form.vehicle, existingVehicles]);
+
+  const [showSugg, setShowSugg] = useState(false);
+
+  return (
+    <div style={{...S.detailCol,animation:"fadeUp 0.3s ease both"}}>
+      <div style={S.section}>
+        <h3 style={S.secTitle}>基本信息</h3>
+        <div style={S.formGrid}>
+          <div style={S.field}>
+            <label style={S.label}>日期</label>
+            <input type="date" value={form.date} onChange={e=>set("date",e.target.value)} style={S.input}/>
+          </div>
+          <div style={S.field}>
+            <label style={S.label}>类型</label>
+            <select value={form.type} onChange={e=>set("type",e.target.value)} style={S.input}>
+              <option value="repair">维修</option>
+              <option value="sale">出售</option>
+            </select>
+          </div>
+        </div>
+        <div style={S.field}>
+          <label style={S.label}>客户名</label>
+          <input value={form.customer} onChange={e=>set("customer",e.target.value)} placeholder="例: John Smith / 王先生" style={S.input}/>
+        </div>
+        <div style={{...S.field,position:"relative"}}>
+          <label style={S.label}>车辆信息</label>
+          <input value={form.vehicle} onChange={e=>{set("vehicle",e.target.value);setShowSugg(true);}} onFocus={()=>setShowSugg(true)} onBlur={()=>setTimeout(()=>setShowSugg(false),200)} placeholder="例: 2022 Toyota Camry · VA ABC-1234" style={S.input}/>
+          {showSugg && vehicleSuggestions.length > 0 && (
+            <div style={S.suggestions}>
+              {vehicleSuggestions.map(v=>(<button key={v} style={S.suggestionItem} onMouseDown={()=>{handleVehicleSelect(v);setShowSugg(false);}}><ICar/><span style={{marginLeft:6}}>{v}</span></button>))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div style={S.section}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+          <h3 style={{...S.secTitle,margin:0}}>库存出库 <span style={{fontWeight:400,color:"#52525b",fontSize:11}}>（已在仓库的）</span></h3>
+          <button style={S.smallAdd} onClick={()=>addItem("inventoryUsed")}><IPlus/> 添加</button>
+        </div>
+        {form.inventoryUsed.map((it,idx)=>(
+          <div key={idx} style={S.itemRow}>
+            <input value={it.item} onChange={e=>updateItem("inventoryUsed",idx,"item",e.target.value)} placeholder="配件名称" style={{...S.input,flex:2}}/>
+            <input value={it.qty} onChange={e=>updateItem("inventoryUsed",idx,"qty",e.target.value)} placeholder="qty" type="number" min="1" style={{...S.input,flex:0,width:55,textAlign:"center"}}/>
+            <div style={{...S.dollarWrap,flex:0}}><span style={S.dollarSign}>$</span><input value={it.cost} onChange={e=>updateItem("inventoryUsed",idx,"cost",e.target.value)} placeholder="0" type="number" style={{...S.input,width:85,paddingLeft:20}}/></div>
+            <button style={S.removeBtn} onClick={()=>removeItem("inventoryUsed",idx)}><IDel/></button>
+          </div>
+        ))}
+        {form.inventoryUsed.length === 0 && <p style={{color:"#3f3f46",fontSize:12,margin:0}}>暂无 — 点击「添加」</p>}
+      </div>
+
+      <div style={S.section}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+          <h3 style={{...S.secTitle,margin:0}}>新购配件 <span style={{fontWeight:400,color:"#52525b",fontSize:11}}>（新购入的）</span></h3>
+          <button style={S.smallAdd} onClick={()=>addItem("newParts")}><IPlus/> 添加</button>
+        </div>
+        {form.newParts.map((it,idx)=>(
+          <div key={idx} style={S.itemRow}>
+            <input value={it.item} onChange={e=>updateItem("newParts",idx,"item",e.target.value)} placeholder="配件名称" style={{...S.input,flex:2}}/>
+            <input value={it.qty} onChange={e=>updateItem("newParts",idx,"qty",e.target.value)} placeholder="qty" type="number" min="1" style={{...S.input,flex:0,width:55,textAlign:"center"}}/>
+            <div style={{...S.dollarWrap,flex:0}}><span style={S.dollarSign}>$</span><input value={it.cost} onChange={e=>updateItem("newParts",idx,"cost",e.target.value)} placeholder="0" type="number" style={{...S.input,width:85,paddingLeft:20}}/></div>
+            <button style={S.removeBtn} onClick={()=>removeItem("newParts",idx)}><IDel/></button>
+          </div>
+        ))}
+        {form.newParts.length === 0 && <p style={{color:"#3f3f46",fontSize:12,margin:0}}>暂无 — 点击「添加」</p>}
+      </div>
+
+      <div style={S.section}>
+        <h3 style={S.secTitle}>收入与工时</h3>
+        <div style={S.formGrid}>
+          <div style={S.field}>
+            <label style={S.label}>报价收入（客户付款）</label>
+            <div style={S.dollarWrap}><span style={S.dollarSign}>$</span><input value={form.quoted} onChange={e=>set("quoted",e.target.value)} type="number" placeholder="0" style={{...S.input,paddingLeft:20}}/></div>
+          </div>
+          <div style={S.field}>
+            <label style={S.label}>工作时长（小时）</label>
+            <input value={form.hours} onChange={e=>set("hours",e.target.value)} type="number" step="0.5" placeholder="0" style={S.input}/>
+          </div>
+        </div>
+        <div style={S.field}>
+          <label style={S.label}>备注</label>
+          <textarea value={form.note} onChange={e=>set("note",e.target.value)} placeholder="维修内容、客户要求..." rows={3} style={{...S.input,resize:"vertical",lineHeight:1.5}}/>
+        </div>
+      </div>
+
+      <div style={S.section}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+          <span style={{fontSize:13,color:"#71717a"}}>预览利润</span>
+          <span style={{fontSize:18,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace",color:
+            (Number(form.quoted||0)-sumItems(form.inventoryUsed)-sumItems(form.newParts))>=0?"#4ade80":"#f87171"
+          }}>${(Number(form.quoted||0)-sumItems(form.inventoryUsed)-sumItems(form.newParts)).toLocaleString()}</span>
+        </div>
+        <div style={{display:"flex",gap:10}}>
+          <button style={S.cancelBtn} onClick={onCancel}>取消</button>
+          <button style={{...S.saveBtn,opacity:(!form.customer.trim()||!form.vehicle.trim())?0.4:1}} disabled={!form.customer.trim()||!form.vehicle.trim()} onClick={handleSubmit}>
+            <ISave/><span style={{marginLeft:6}}>{isEdit?"保存修改":"保存记录"}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Export Helpers ────────────────────────────────────────
+function getRecordsInRange(records, startDate, endDate) {
+  const all = [];
+  Object.keys(records).sort().forEach(dk => {
+    if (dk >= startDate && dk <= endDate) {
+      (records[dk] || []).forEach(r => all.push(r));
+    }
+  });
+  return all;
+}
+
+function buildExportRows(recs) {
+  const rows = [];
+  recs.forEach(r => {
+    const invTotal = sumItems(r.inventoryUsed);
+    const npTotal = sumItems(r.newParts);
+    const profit = Number(r.quoted || 0) - invTotal - npTotal;
+    rows.push({
+      date: r.date,
+      type: r.type === "repair" ? "维修" : "出售",
+      customer: r.customer,
+      vehicle: r.vehicle,
+      invItems: (r.inventoryUsed || []).map(i => `${i.item} x${i.qty} $${i.cost * i.qty}`).join("; "),
+      invTotal,
+      newItems: (r.newParts || []).map(i => `${i.item} x${i.qty} $${i.cost * i.qty}`).join("; "),
+      npTotal,
+      quoted: Number(r.quoted || 0),
+      profit,
+      hours: Number(r.hours || 0),
+      note: r.note || "",
+    });
+  });
+  return rows;
+}
+
+function exportCSV(rows) {
+  const headers = ["日期","类型","客户","车辆","库存出库明细","库存出库合计","新购配件明细","新购配件合计","报价收入","利润","工时","备注"];
+  const csvRows = [headers.join(",")];
+  rows.forEach(r => {
+    csvRows.push([r.date, r.type, `"${r.customer}"`, `"${r.vehicle}"`, `"${r.invItems}"`, r.invTotal, `"${r.newItems}"`, r.npTotal, r.quoted, r.profit, r.hours, `"${r.note}"`].join(","));
+  });
+  return "\uFEFF" + csvRows.join("\n");
+}
+
+function downloadFile(content, filename, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function exportExcel(rows, startDate, endDate) {
+  // Build a simple XLSX using XML spreadsheet format (compatible with Excel)
+  const escXml = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  const headers = ["日期","类型","客户","车辆","库存出库明细","库存出库($)","新购配件明细","新购配件($)","报价收入($)","利润($)","工时(h)","备注"];
+  let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<?mso-application progid="Excel.Sheet"?>\n';
+  xml += '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">\n';
+  xml += '<Styles><Style ss:ID="h"><Font ss:Bold="1" ss:Size="11"/><Interior ss:Color="#1e3a5f" ss:Pattern="Solid"/><Font ss:Color="#ffffff" ss:Bold="1"/></Style>';
+  xml += '<Style ss:ID="n"><NumberFormat ss:Format="#,##0.00"/></Style>';
+  xml += '<Style ss:ID="g"><Font ss:Color="#22c55e" ss:Bold="1"/><NumberFormat ss:Format="#,##0.00"/></Style></Styles>\n';
+  xml += `<Worksheet ss:Name="维修记录 ${startDate} to ${endDate}"><Table>\n`;
+  // Column widths
+  [90,50,80,160,200,80,200,80,80,80,50,200].forEach(w => { xml += `<Column ss:Width="${w}"/>\n`; });
+  // Header row
+  xml += '<Row ss:StyleID="h">';
+  headers.forEach(h => { xml += `<Cell><Data ss:Type="String">${escXml(h)}</Data></Cell>`; });
+  xml += '</Row>\n';
+  // Data rows
+  rows.forEach(r => {
+    xml += '<Row>';
+    xml += `<Cell><Data ss:Type="String">${escXml(r.date)}</Data></Cell>`;
+    xml += `<Cell><Data ss:Type="String">${escXml(r.type)}</Data></Cell>`;
+    xml += `<Cell><Data ss:Type="String">${escXml(r.customer)}</Data></Cell>`;
+    xml += `<Cell><Data ss:Type="String">${escXml(r.vehicle)}</Data></Cell>`;
+    xml += `<Cell><Data ss:Type="String">${escXml(r.invItems)}</Data></Cell>`;
+    xml += `<Cell ss:StyleID="n"><Data ss:Type="Number">${r.invTotal}</Data></Cell>`;
+    xml += `<Cell><Data ss:Type="String">${escXml(r.newItems)}</Data></Cell>`;
+    xml += `<Cell ss:StyleID="n"><Data ss:Type="Number">${r.npTotal}</Data></Cell>`;
+    xml += `<Cell ss:StyleID="n"><Data ss:Type="Number">${r.quoted}</Data></Cell>`;
+    xml += `<Cell ss:StyleID="g"><Data ss:Type="Number">${r.profit}</Data></Cell>`;
+    xml += `<Cell ss:StyleID="n"><Data ss:Type="Number">${r.hours}</Data></Cell>`;
+    xml += `<Cell><Data ss:Type="String">${escXml(r.note)}</Data></Cell>`;
+    xml += '</Row>\n';
+  });
+  // Summary row
+  const totInv = rows.reduce((s,r) => s+r.invTotal, 0);
+  const totNp = rows.reduce((s,r) => s+r.npTotal, 0);
+  const totQ = rows.reduce((s,r) => s+r.quoted, 0);
+  const totP = rows.reduce((s,r) => s+r.profit, 0);
+  const totH = rows.reduce((s,r) => s+r.hours, 0);
+  xml += '<Row><Cell/><Cell/><Cell/><Cell><Data ss:Type="String">合计</Data></Cell><Cell/>';
+  xml += `<Cell ss:StyleID="n"><Data ss:Type="Number">${totInv}</Data></Cell><Cell/>`;
+  xml += `<Cell ss:StyleID="n"><Data ss:Type="Number">${totNp}</Data></Cell>`;
+  xml += `<Cell ss:StyleID="n"><Data ss:Type="Number">${totQ}</Data></Cell>`;
+  xml += `<Cell ss:StyleID="g"><Data ss:Type="Number">${totP}</Data></Cell>`;
+  xml += `<Cell ss:StyleID="n"><Data ss:Type="Number">${totH}</Data></Cell>`;
+  xml += '<Cell/></Row>\n';
+  xml += '</Table></Worksheet></Workbook>';
+  downloadFile(xml, `维修记录_${startDate}_${endDate}.xls`, "application/vnd.ms-excel");
+}
+
+function exportPDF(rows, startDate, endDate) {
+  const totInv = rows.reduce((s,r) => s+r.invTotal, 0);
+  const totNp = rows.reduce((s,r) => s+r.npTotal, 0);
+  const totQ = rows.reduce((s,r) => s+r.quoted, 0);
+  const totP = rows.reduce((s,r) => s+r.profit, 0);
+  const totH = rows.reduce((s,r) => s+r.hours, 0);
+
+  const esc = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+
+  let html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>
+@page{size:landscape;margin:12mm}
+body{font-family:'Noto Sans SC',-apple-system,Helvetica,sans-serif;font-size:11px;color:#1a1a1a;line-height:1.4}
+h1{font-size:18px;margin:0 0 4px;color:#111}
+.sub{font-size:12px;color:#666;margin:0 0 16px}
+table{width:100%;border-collapse:collapse;margin-bottom:16px}
+th{background:#1e293b;color:#fff;padding:7px 6px;text-align:left;font-size:10px;font-weight:500}
+td{padding:6px;border-bottom:1px solid #e5e7eb;font-size:10px;vertical-align:top}
+tr:nth-child(even){background:#f8fafc}
+.num{text-align:right;font-family:'IBM Plex Mono',monospace}
+.green{color:#16a34a;font-weight:600}
+.red{color:#dc2626;font-weight:600}
+.total-row td{font-weight:700;border-top:2px solid #1e293b;background:#f1f5f9}
+.summary{display:flex;gap:32px;margin-bottom:20px}
+.summary-item{text-align:center}
+.summary-label{font-size:10px;color:#64748b}
+.summary-val{font-size:20px;font-weight:700;font-family:'IBM Plex Mono',monospace}
+.footer{margin-top:20px;font-size:9px;color:#94a3b8;text-align:center}
+</style></head><body>
+<h1>维修记录报表</h1>
+<p class="sub">${esc(startDate)} — ${esc(endDate)}　共 ${rows.length} 条记录</p>
+<div class="summary">
+<div class="summary-item"><div class="summary-label">报价收入</div><div class="summary-val green">$${totQ.toLocaleString()}</div></div>
+<div class="summary-item"><div class="summary-label">库存出库</div><div class="summary-val">$${totInv.toLocaleString()}</div></div>
+<div class="summary-item"><div class="summary-label">新购配件</div><div class="summary-val">$${totNp.toLocaleString()}</div></div>
+<div class="summary-item"><div class="summary-label">利润</div><div class="summary-val ${totP>=0?'green':'red'}">$${totP.toLocaleString()}</div></div>
+<div class="summary-item"><div class="summary-label">总工时</div><div class="summary-val">${totH}h</div></div>
+</div>
+<table>
+<tr><th>日期</th><th>类型</th><th>客户</th><th>车辆</th><th>库存出库</th><th class="num">库存($)</th><th>新购配件</th><th class="num">新购($)</th><th class="num">报价($)</th><th class="num">利润($)</th><th class="num">工时</th><th>备注</th></tr>`;
+
+  rows.forEach(r => {
+    html += `<tr>
+<td>${esc(r.date)}</td><td>${esc(r.type)}</td><td>${esc(r.customer)}</td><td>${esc(r.vehicle)}</td>
+<td>${esc(r.invItems||"—")}</td><td class="num">$${r.invTotal.toLocaleString()}</td>
+<td>${esc(r.newItems||"—")}</td><td class="num">$${r.npTotal.toLocaleString()}</td>
+<td class="num">$${r.quoted.toLocaleString()}</td>
+<td class="num ${r.profit>=0?'green':'red'}">$${r.profit.toLocaleString()}</td>
+<td class="num">${r.hours}</td><td>${esc(r.note||"")}</td></tr>`;
+  });
+
+  html += `<tr class="total-row"><td colspan="4">合计</td><td></td><td class="num">$${totInv.toLocaleString()}</td><td></td><td class="num">$${totNp.toLocaleString()}</td><td class="num">$${totQ.toLocaleString()}</td><td class="num ${totP>=0?'green':'red'}">$${totP.toLocaleString()}</td><td class="num">${totH}</td><td></td></tr>`;
+  html += `</table><div class="footer">导出时间: ${new Date().toLocaleString("zh-CN")}  ·  维修记录管理系统</div></body></html>`;
+
+  const printWin = window.open("", "_blank", "width=1100,height=700");
+  printWin.document.write(html);
+  printWin.document.close();
+  setTimeout(() => { printWin.print(); }, 500);
+}
+
+// ─── Settings View ────────────────────────────────────────
+// ─── Cloud Setup Screen ───────────────────────────────────
+function CloudSetup({ onComplete }) {
+  const [apiKey, setApiKey] = useState("");
+  const [binId, setBinId] = useState("");
+  const [mode, setMode] = useState("new"); // new | existing
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleSetup = async () => {
+    if (!apiKey.trim()) { setError("请输入 Access Key"); return; }
+    setLoading(true);
+    setError("");
+    try {
+      if (mode === "new") {
+        const newBinId = await cloudCreateBin(apiKey.trim());
+        // If there's existing local data, push it to cloud
+        const local = loadLocalCache();
+        if (local && Object.keys(local).length > 0) {
+          await cloudSave({ apiKey: apiKey.trim(), binId: newBinId }, local);
+        }
+        onComplete({ apiKey: apiKey.trim(), binId: newBinId });
+      } else {
+        if (!binId.trim()) { setError("请输入 Bin ID"); setLoading(false); return; }
+        // Verify connection
+        await cloudLoad({ apiKey: apiKey.trim(), binId: binId.trim() });
+        onComplete({ apiKey: apiKey.trim(), binId: binId.trim() });
+      }
+    } catch(e) {
+      setError("连接失败: " + e.message);
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div style={{...S.root,display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}>
+      <div style={{maxWidth:420,width:"100%",animation:"fadeUp 0.4s ease both"}}>
+        <div style={{textAlign:"center",marginBottom:32}}>
+          <div style={{width:56,height:56,borderRadius:16,background:"linear-gradient(135deg,#3b82f6,#1e40af)",display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 16px"}}>
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 10h-1.26A8 8 0 109 20h9a5 5 0 000-10z"/></svg>
+          </div>
+          <h1 style={{fontSize:22,fontWeight:600,color:"#fafafa",margin:"0 0 6px",fontFamily:"'Noto Sans SC',sans-serif"}}>云端同步设置</h1>
+          <p style={{fontSize:13,color:"#71717a",margin:0,lineHeight:1.5}}>连接 JSONBin.io 实现多设备数据共享</p>
+        </div>
+
+        <div style={S.section}>
+          <h3 style={S.secTitle}>第一步：获取 Access Key</h3>
+          <p style={{fontSize:12,color:"#71717a",margin:"0 0 12px",lineHeight:1.6}}>
+            1. 打开 <span style={{color:"#60a5fa"}}>jsonbin.io</span> 注册免费账号<br/>
+            2. 登录后点头像 → API Keys<br/>
+            3. 复制 Access Key 粘贴到下面
+          </p>
+          <input value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="粘贴你的 Access Key" style={{...S.input,fontSize:14,marginBottom:12}} />
+        </div>
+
+        <div style={{...S.section,marginTop:12}}>
+          <h3 style={S.secTitle}>第二步：选择模式</h3>
+          <div style={{display:"flex",gap:8,marginBottom:12}}>
+            <button onClick={()=>setMode("new")} style={{flex:1,padding:"10px 12px",borderRadius:10,border:mode==="new"?"1px solid rgba(96,165,250,0.4)":"1px solid rgba(255,255,255,0.06)",background:mode==="new"?"rgba(96,165,250,0.1)":"rgba(255,255,255,0.02)",color:mode==="new"?"#93c5fd":"#71717a",fontSize:13,fontFamily:"'Noto Sans SC',sans-serif",textAlign:"center",cursor:"pointer"}}>
+              全新开始<br/><span style={{fontSize:11,opacity:0.7}}>创建新的数据库</span>
+            </button>
+            <button onClick={()=>setMode("existing")} style={{flex:1,padding:"10px 12px",borderRadius:10,border:mode==="existing"?"1px solid rgba(96,165,250,0.4)":"1px solid rgba(255,255,255,0.06)",background:mode==="existing"?"rgba(96,165,250,0.1)":"rgba(255,255,255,0.02)",color:mode==="existing"?"#93c5fd":"#71717a",fontSize:13,fontFamily:"'Noto Sans SC',sans-serif",textAlign:"center",cursor:"pointer"}}>
+              连接已有<br/><span style={{fontSize:11,opacity:0.7}}>输入 Bin ID 加入</span>
+            </button>
+          </div>
+          {mode === "existing" && (
+            <div>
+              <p style={{fontSize:12,color:"#71717a",margin:"0 0 8px"}}>输入同事分享给你的 Bin ID：</p>
+              <input value={binId} onChange={e => setBinId(e.target.value)} placeholder="Bin ID（如 6xxx...）" style={{...S.input,fontSize:14}} />
+            </div>
+          )}
+          {mode === "new" && (
+            <p style={{fontSize:12,color:"#52525b",margin:0,lineHeight:1.5}}>将自动创建数据库。创建后在设置页面可以看到 Bin ID，分享给同事让他们选「连接已有」即可。</p>
+          )}
+        </div>
+
+        {error && <p style={{color:"#f87171",fontSize:12.5,margin:"12px 0 0",textAlign:"center"}}>{error}</p>}
+
+        <button onClick={handleSetup} disabled={loading} style={{
+          width:"100%",marginTop:16,padding:"14px 20px",borderRadius:12,border:"none",
+          background:loading?"rgba(96,165,250,0.08)":"linear-gradient(135deg,#3b82f6,#2563eb)",
+          color:"#fff",fontSize:15,fontWeight:600,cursor:loading?"wait":"pointer",
+          fontFamily:"'Noto Sans SC',sans-serif",display:"flex",alignItems:"center",justifyContent:"center",gap:8,
+          opacity:loading?0.6:1,
+        }}>
+          {loading && <div style={{width:16,height:16,border:"2px solid rgba(255,255,255,0.3)",borderTopColor:"#fff",borderRadius:"50%",animation:"spin 0.7s linear infinite"}}/>}
+          {loading ? "连接中..." : mode === "new" ? "创建并连接" : "连接"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Settings View ────────────────────────────────────────
+function SettingsView({ onReset, totalRecords, records, onImport, cloudCfg, onCloudDisconnect, onRefresh, syncStatus }) {
+  const [step, setStep] = useState(0);
+  const [exportStart, setExportStart] = useState(() => {
+    const d = new Date(); d.setDate(d.getDate() - 30);
+    return d.toISOString().slice(0, 10);
+  });
+  const [exportEnd, setExportEnd] = useState(() => new Date().toISOString().slice(0, 10));
+  const [exportMsg, setExportMsg] = useState("");
+  const [importMsg, setImportMsg] = useState("");
+  const fileInputRef = React.createRef();
+
+  const doReset = () => { onReset(); setStep(2); setTimeout(() => setStep(0), 2000); };
+
+  const previewCount = useMemo(() => {
+    return getRecordsInRange(records, exportStart, exportEnd).length;
+  }, [records, exportStart, exportEnd]);
+
+  const handleExport = (format) => {
+    const recs = getRecordsInRange(records, exportStart, exportEnd);
+    if (recs.length === 0) { setExportMsg("所选日期范围内没有记录"); setTimeout(() => setExportMsg(""), 2500); return; }
+    const rows = buildExportRows(recs);
+    if (format === "excel") {
+      exportExcel(rows, exportStart, exportEnd);
+      setExportMsg("Excel 已下载");
+    } else {
+      exportPDF(rows, exportStart, exportEnd);
+      setExportMsg("PDF 已生成（请在弹出窗口中保存）");
+    }
+    setTimeout(() => setExportMsg(""), 3000);
+  };
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:12,animation:"fadeUp 0.3s ease both"}}>
+      <div style={S.section}>
+        <h3 style={S.secTitle}>数据统计</h3>
+        <p style={{fontSize:13,color:"#a1a1aa",margin:0}}>当前共有 <span style={{color:"#fafafa",fontWeight:600,fontFamily:"'IBM Plex Mono',monospace"}}>{totalRecords}</span> 条记录</p>
+      </div>
+
+      {/* Cloud Status */}
+      <div style={S.section}>
+        <h3 style={S.secTitle}>云端同步</h3>
+        {cloudCfg ? (
+          <div>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+              <div style={{width:10,height:10,borderRadius:"50%",background:syncStatus==="ok"?"#4ade80":syncStatus==="error"?"#f87171":"#fbbf24"}}/>
+              <span style={{fontSize:13,color:syncStatus==="ok"?"#4ade80":syncStatus==="error"?"#f87171":"#fbbf24"}}>
+                {syncStatus==="ok"?"已连接 · 数据已同步":syncStatus==="error"?"同步出错":"同步中..."}
+              </span>
+            </div>
+            <div style={{background:"rgba(255,255,255,0.03)",borderRadius:8,padding:"10px 12px",marginBottom:12}}>
+              <p style={{fontSize:11,color:"#52525b",margin:"0 0 4px"}}>Bin ID（分享给同事加入同一数据库）：</p>
+              <p style={{fontSize:13,color:"#93c5fd",margin:0,fontFamily:"'IBM Plex Mono',monospace",wordBreak:"break-all",userSelect:"all"}}>{cloudCfg.binId}</p>
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <button style={{
+                flex:1,background:"rgba(96,165,250,0.08)",border:"1px solid rgba(96,165,250,0.2)",borderRadius:10,
+                color:"#93c5fd",fontSize:12.5,padding:"9px 14px",cursor:"pointer",fontFamily:"'Noto Sans SC',sans-serif",
+                display:"flex",alignItems:"center",justifyContent:"center",gap:5,
+              }} onClick={onRefresh}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 4v6h6M23 20v-6h-6M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15"/></svg>
+                手动刷新
+              </button>
+              <button style={{
+                flex:1,background:"rgba(248,113,113,0.06)",border:"1px solid rgba(248,113,113,0.15)",borderRadius:10,
+                color:"#f87171",fontSize:12.5,padding:"9px 14px",cursor:"pointer",fontFamily:"'Noto Sans SC',sans-serif",
+              }} onClick={onCloudDisconnect}>断开连接</button>
+            </div>
+          </div>
+        ) : (
+          <p style={{fontSize:12.5,color:"#71717a",margin:0}}>未连接云端</p>
+        )}
+      </div>
+
+      {/* Data.json Backup & Restore */}
+      <div style={S.section}>
+        <h3 style={S.secTitle}>数据备份 (data.json)</h3>
+        <p style={{fontSize:12,color:"#71717a",margin:"0 0 14px",lineHeight:1.5}}>将全部数据备份为 data.json 文件，或从 data.json 文件恢复数据。</p>
+        <div style={{display:"flex",gap:10,marginBottom:10}}>
+          <button style={{
+            flex:1,background:"rgba(168,85,247,0.08)",border:"1px solid rgba(168,85,247,0.2)",borderRadius:10,
+            color:"#c084fc",fontSize:13,fontWeight:500,padding:"11px 16px",cursor:"pointer",
+            fontFamily:"'Noto Sans SC',sans-serif",display:"flex",alignItems:"center",justifyContent:"center",gap:6,
+          }} onClick={() => exportDataJSON(records)}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+            备份 data.json
+          </button>
+          <button style={{
+            flex:1,background:"rgba(251,191,36,0.08)",border:"1px solid rgba(251,191,36,0.2)",borderRadius:10,
+            color:"#fbbf24",fontSize:13,fontWeight:500,padding:"11px 16px",cursor:"pointer",
+            fontFamily:"'Noto Sans SC',sans-serif",display:"flex",alignItems:"center",justifyContent:"center",gap:6,
+          }} onClick={() => fileInputRef.current && fileInputRef.current.click()}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+            导入 data.json
+          </button>
+          <input ref={fileInputRef} type="file" accept=".json" style={{display:"none"}} onChange={async (e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            try {
+              const data = await importDataJSON(file);
+              onImport(data);
+              setImportMsg("导入成功！共 " + Object.values(data).flat().length + " 条记录");
+            } catch(err) {
+              setImportMsg("导入失败：文件格式不正确");
+            }
+            setTimeout(() => setImportMsg(""), 3000);
+            e.target.value = "";
+          }}/>
+        </div>
+        {importMsg && (
+          <div style={{padding:"10px 14px",background:importMsg.includes("成功")?"rgba(74,222,128,0.06)":"rgba(248,113,113,0.06)",border:importMsg.includes("成功")?"1px solid rgba(74,222,128,0.15)":"1px solid rgba(248,113,113,0.15)",borderRadius:8,textAlign:"center"}}>
+            <p style={{fontSize:12.5,color:importMsg.includes("成功")?"#4ade80":"#f87171",margin:0}}>{importMsg}</p>
+          </div>
+        )}
+      </div>
+
+      {/* Export Section */}
+      <div style={S.section}>
+        <h3 style={S.secTitle}>导出数据</h3>
+        <p style={{fontSize:12,color:"#71717a",margin:"0 0 14px",lineHeight:1.5}}>选择日期范围，导出为 Excel 或 PDF 报表。</p>
+        
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:14}}>
+          <div>
+            <label style={{display:"block",fontSize:11,color:"#71717a",marginBottom:5}}>开始日期</label>
+            <input type="date" value={exportStart} onChange={e => setExportStart(e.target.value)}
+              style={{width:"100%",boxSizing:"border-box",background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:8,color:"#e4e4e7",fontSize:13,padding:"9px 12px",fontFamily:"'Noto Sans SC',sans-serif"}}/>
+          </div>
+          <div>
+            <label style={{display:"block",fontSize:11,color:"#71717a",marginBottom:5}}>结束日期</label>
+            <input type="date" value={exportEnd} onChange={e => setExportEnd(e.target.value)}
+              style={{width:"100%",boxSizing:"border-box",background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:8,color:"#e4e4e7",fontSize:13,padding:"9px 12px",fontFamily:"'Noto Sans SC',sans-serif"}}/>
+          </div>
+        </div>
+
+        <p style={{fontSize:12,color:"#a1a1aa",margin:"0 0 14px"}}>
+          范围内共 <span style={{color:"#fafafa",fontWeight:600,fontFamily:"'IBM Plex Mono',monospace"}}>{previewCount}</span> 条记录
+        </p>
+
+        <div style={{display:"flex",gap:10}}>
+          <button style={{
+            flex:1,background:"rgba(74,222,128,0.08)",border:"1px solid rgba(74,222,128,0.2)",borderRadius:10,
+            color:"#4ade80",fontSize:13,fontWeight:500,padding:"11px 16px",cursor:"pointer",
+            fontFamily:"'Noto Sans SC',sans-serif",display:"flex",alignItems:"center",justifyContent:"center",gap:6,
+            opacity: previewCount === 0 ? 0.4 : 1,
+          }} onClick={() => handleExport("excel")}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+            导出 Excel
+          </button>
+          <button style={{
+            flex:1,background:"rgba(96,165,250,0.08)",border:"1px solid rgba(96,165,250,0.2)",borderRadius:10,
+            color:"#93c5fd",fontSize:13,fontWeight:500,padding:"11px 16px",cursor:"pointer",
+            fontFamily:"'Noto Sans SC',sans-serif",display:"flex",alignItems:"center",justifyContent:"center",gap:6,
+            opacity: previewCount === 0 ? 0.4 : 1,
+          }} onClick={() => handleExport("pdf")}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            导出 PDF
+          </button>
+        </div>
+
+        {exportMsg && (
+          <div style={{marginTop:10,padding:"10px 14px",background:"rgba(74,222,128,0.06)",border:"1px solid rgba(74,222,128,0.15)",borderRadius:8,textAlign:"center"}}>
+            <p style={{fontSize:12.5,color:"#4ade80",margin:0}}>{exportMsg}</p>
+          </div>
+        )}
+      </div>
+
+      {/* Danger Zone */}
+      <div style={{...S.section,borderColor:step===1?"rgba(248,113,113,0.25)":"rgba(255,255,255,0.055)"}}>
+        <h3 style={{...S.secTitle,color:"#f87171"}}>危险操作</h3>
+        <p style={{fontSize:12.5,color:"#71717a",margin:"0 0 14px",lineHeight:1.5}}>清空所有记录数据，包括所有周的维修和出售记录。此操作不可恢复。</p>
+        
+        {step === 0 && (
+          <button style={{
+            background:"rgba(248,113,113,0.08)",border:"1px solid rgba(248,113,113,0.2)",borderRadius:10,
+            color:"#f87171",fontSize:13,padding:"10px 18px",cursor:"pointer",width:"100%",
+            fontFamily:"'Noto Sans SC',sans-serif",display:"flex",alignItems:"center",justifyContent:"center",gap:6,
+          }} onClick={()=>setStep(1)}>
+            <IWarn/> 清空所有数据
+          </button>
+        )}
+
+        {step === 1 && (
+          <div style={{background:"rgba(248,113,113,0.06)",border:"1px solid rgba(248,113,113,0.2)",borderRadius:10,padding:16}}>
+            <p style={{fontSize:13,color:"#fca5a5",margin:"0 0 12px",fontWeight:500}}>确定要删除全部 {totalRecords} 条记录吗？</p>
+            <p style={{fontSize:12,color:"#71717a",margin:"0 0 14px"}}>此操作无法撤销，所有数据将永久丢失。</p>
+            <div style={{display:"flex",gap:10}}>
+              <button style={{
+                flex:1,background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:8,
+                color:"#a1a1aa",fontSize:13,padding:"9px 14px",cursor:"pointer",fontFamily:"'Noto Sans SC',sans-serif",
+              }} onClick={()=>setStep(0)}>取消</button>
+              <button style={{
+                flex:1,background:"rgba(248,113,113,0.2)",border:"1px solid rgba(248,113,113,0.4)",borderRadius:8,
+                color:"#fca5a5",fontSize:13,fontWeight:600,padding:"9px 14px",cursor:"pointer",fontFamily:"'Noto Sans SC',sans-serif",
+              }} onClick={doReset}>确认删除全部</button>
+            </div>
+          </div>
+        )}
+
+        {step === 2 && (
+          <div style={{background:"rgba(74,222,128,0.06)",border:"1px solid rgba(74,222,128,0.2)",borderRadius:10,padding:"12px 16px",textAlign:"center"}}>
+            <p style={{fontSize:13,color:"#4ade80",margin:0}}>已清空全部数据</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Styles ───────────────────────────────────────────────
+const S = {
+  root: { fontFamily:"'Noto Sans SC',-apple-system,sans-serif", background:"#09090b", minHeight:"100vh", color:"#e4e4e7" },
+  loadingWrap: { display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100vh" },
+  spinner: { width:28,height:28,border:"2.5px solid rgba(255,255,255,0.08)",borderTopColor:"#60a5fa",borderRadius:"50%",animation:"spin 0.8s linear infinite" },
+  header: { background:"linear-gradient(180deg,rgba(18,18,20,1) 0%,rgba(9,9,11,0) 100%)", borderBottom:"1px solid rgba(255,255,255,0.04)", position:"sticky",top:0,zIndex:10,backdropFilter:"blur(20px)" },
+  headerInner: { maxWidth:780,margin:"0 auto",padding:"16px 20px 12px",display:"flex",alignItems:"center",gap:8 },
+  navBtn: { background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:9, color:"#a1a1aa",width:34,height:34,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",flexShrink:0,fontSize:12,fontFamily:"'Noto Sans SC',sans-serif" },
+  title: { fontSize:18,fontWeight:600,margin:0,letterSpacing:"-0.02em",color:"#fafafa" },
+  subtitle: { fontSize:12,color:"#71717a",margin:"2px 0 0",fontFamily:"'IBM Plex Mono',monospace" },
+  addBtn: { background:"rgba(96,165,250,0.12)",border:"1px solid rgba(96,165,250,0.25)",borderRadius:10, color:"#93c5fd",fontSize:13,fontWeight:500,padding:"7px 14px",cursor:"pointer",display:"flex",alignItems:"center", fontFamily:"'Noto Sans SC',sans-serif" },
+  main: { maxWidth:780,margin:"0 auto",padding:"14px 20px 60px" },
+
+  // Week summary
+  weekSummary: { background:"rgba(255,255,255,0.025)",border:"1px solid rgba(255,255,255,0.055)",borderRadius:12,padding:"14px 16px",marginBottom:12,animation:"fadeUp 0.3s ease both" },
+  wsStat: { display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10 },
+  wsLabel: { fontSize:13,fontWeight:500,color:"#fafafa" },
+  wsCount: { fontSize:12,fontFamily:"'IBM Plex Mono',monospace",color:"#a1a1aa",background:"rgba(255,255,255,0.05)",padding:"2px 8px",borderRadius:6 },
+  wsNumbers: { display:"flex",gap:20,flexWrap:"wrap" },
+  wsSmLabel: { fontSize:10.5,color:"#71717a",marginRight:5 },
+  wsGreen: { fontSize:13,fontFamily:"'IBM Plex Mono',monospace",fontWeight:500,color:"#4ade80" },
+  wsMuted: { fontSize:13,fontFamily:"'IBM Plex Mono',monospace",color:"#a1a1aa" },
+
+  cardGrid: { display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(210px,1fr))",gap:10 },
+  dayCard: { background:"rgba(255,255,255,0.025)",border:"1px solid rgba(255,255,255,0.055)",borderRadius:14,padding:16, cursor:"pointer",textAlign:"left",color:"inherit",position:"relative", animation:"fadeUp 0.35s ease both",transition:"border-color 0.2s" },
+  dayCardToday: { border:"1px solid rgba(96,165,250,0.25)",background:"rgba(59,130,246,0.04)" },
+  todayBadge: { fontSize:10,fontWeight:600,padding:"1px 6px",borderRadius:4,background:"rgba(96,165,250,0.15)",color:"#93c5fd", fontFamily:"'IBM Plex Mono',monospace" },
+  dayCardHeader: { display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10 },
+  dayCardDate: { fontSize:13,fontWeight:500,color:"#fafafa" },
+  dayCardCount: { fontSize:13,fontFamily:"'IBM Plex Mono',monospace",fontWeight:600,color:"#a1a1aa", background:"rgba(255,255,255,0.05)",width:26,height:26,borderRadius:8, display:"flex",alignItems:"center",justifyContent:"center" },
+  dayCardBody: { display:"flex",flexDirection:"column",gap:4 },
+  statRow: { display:"flex",justifyContent:"space-between",alignItems:"center" },
+  statLabel: { fontSize:11.5,color:"#71717a" },
+  valGreen: { fontSize:13,fontFamily:"'IBM Plex Mono',monospace",fontWeight:500,color:"#4ade80" },
+  valMuted: { fontSize:12,fontFamily:"'IBM Plex Mono',monospace",color:"#a1a1aa" },
+  dayCardFooter: { display:"flex",flexWrap:"wrap",gap:4,marginTop:8,paddingTop:8,borderTop:"1px solid rgba(255,255,255,0.04)" },
+  vehicleChip: { fontSize:10.5,color:"#a1a1aa",background:"rgba(255,255,255,0.04)",padding:"2px 7px",borderRadius:4 },
+  chipMore: { fontSize:10.5,color:"#52525b",padding:"2px 4px" },
+  dayCardArrow: { position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",color:"#3f3f46" },
+
+  listCol: { display:"flex",flexDirection:"column",gap:10 },
+  emptyState: { display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center", padding:"60px 20px",color:"#3f3f46" },
+  recordCard: { background:"rgba(255,255,255,0.025)",border:"1px solid rgba(255,255,255,0.055)",borderRadius:14,padding:16, cursor:"pointer",textAlign:"left",color:"inherit",width:"100%",animation:"fadeUp 0.35s ease both" },
+  rcTop: { display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8 },
+  badge: (t) => ({ fontSize:10.5,fontWeight:500,padding:"2px 7px",borderRadius:5, background:t==="repair"?"rgba(59,130,246,0.12)":"rgba(234,179,8,0.12)", color:t==="repair"?"#60a5fa":"#facc15" }),
+  custName: { fontSize:14.5,fontWeight:500,color:"#fafafa" },
+  rcQuoted: { fontSize:15,fontWeight:600,fontFamily:"'IBM Plex Mono',monospace",color:"#4ade80" },
+  rcVehicle: { display:"flex",alignItems:"center",fontSize:12.5,color:"#a1a1aa",marginBottom:8 },
+  rcMeta: { display:"flex",gap:14,flexWrap:"wrap" },
+  metaI: { display:"flex",alignItems:"center",gap:3,fontSize:11.5,color:"#71717a",fontFamily:"'IBM Plex Mono',monospace" },
+  rcNote: { fontSize:11.5,color:"#52525b",marginTop:8,paddingTop:8,borderTop:"1px solid rgba(255,255,255,0.04)",lineHeight:1.5 },
+
+  detailCol: { display:"flex",flexDirection:"column",gap:12 },
+  detailTop: { background:"linear-gradient(135deg,rgba(59,130,246,0.05) 0%,rgba(255,255,255,0.025) 100%)", border:"1px solid rgba(255,255,255,0.055)",borderRadius:16,padding:20 },
+  detailCust: { fontSize:20,fontWeight:600,margin:"8px 0 4px",color:"#fafafa" },
+  detailVeh: { fontSize:13,color:"#a1a1aa",margin:"0 0 2px" },
+  detailDateText: { fontSize:12,fontFamily:"'IBM Plex Mono',monospace",color:"#71717a",margin:0 },
+  detailBigQ: { fontSize:24,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace",color:"#4ade80",marginTop:2 },
+  actionBtn: { background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:9, color:"#a1a1aa",fontSize:12.5,padding:"8px 14px",cursor:"pointer",display:"flex",alignItems:"center", fontFamily:"'Noto Sans SC',sans-serif" },
+  dangerBtn: { color:"#f87171",borderColor:"rgba(248,113,113,0.15)" },
+  confirmBar: { marginTop:12,padding:"12px 14px",background:"rgba(248,113,113,0.06)",border:"1px solid rgba(248,113,113,0.15)", borderRadius:10,display:"flex",justifyContent:"space-between",alignItems:"center" },
+  confirmYes: { background:"rgba(248,113,113,0.15)",border:"1px solid rgba(248,113,113,0.3)",borderRadius:7, color:"#f87171",fontSize:12,padding:"5px 12px",cursor:"pointer",fontFamily:"'Noto Sans SC',sans-serif" },
+  confirmNo: { background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:7, color:"#a1a1aa",fontSize:12,padding:"5px 12px",cursor:"pointer",fontFamily:"'Noto Sans SC',sans-serif" },
+  curBadge: { fontSize:10,fontWeight:500,padding:"1px 6px",borderRadius:4,background:"rgba(96,165,250,0.15)",color:"#93c5fd" },
+
+  section: { background:"rgba(255,255,255,0.025)",border:"1px solid rgba(255,255,255,0.055)",borderRadius:14,padding:18 },
+  secTitle: { fontSize:13.5,fontWeight:500,color:"#fafafa",margin:"0 0 12px" },
+  subLabel: { fontSize:10.5,color:"#71717a",textTransform:"uppercase",letterSpacing:"0.06em",margin:"0 0 6px" },
+  lineItem: { display:"flex",justifyContent:"space-between",fontSize:12.5,color:"#d4d4d8",padding:"4px 0" },
+  lineCost: { fontFamily:"'IBM Plex Mono',monospace",color:"#a1a1aa" },
+  lineTotal: { display:"flex",justifyContent:"space-between",fontSize:12.5,fontWeight:500,color:"#e4e4e7", borderTop:"1px dashed rgba(255,255,255,0.08)",paddingTop:6,marginTop:4,fontFamily:"'IBM Plex Mono',monospace" },
+  profitRow: { display:"flex",justifyContent:"space-between",alignItems:"center", borderTop:"1px solid rgba(255,255,255,0.07)",paddingTop:14,marginTop:8 },
+  profitLabel: { fontSize:13.5,fontWeight:500,color:"#fafafa" },
+  profitSub: { fontSize:10.5,color:"#52525b",marginLeft:5 },
+  profitVal: { fontSize:19,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace" },
+  bigNum: { fontSize:26,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace",color:"#fafafa",margin:0 },
+  bigUnit: { fontSize:13,fontWeight:400,color:"#52525b",marginLeft:3 },
+  noteText: { fontSize:12.5,color:"#a1a1aa",lineHeight:1.6,margin:0 },
+
+  formGrid: { display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12 },
+  field: { marginBottom:12 },
+  label: { display:"block",fontSize:11,color:"#71717a",marginBottom:5 },
+  input: { width:"100%",boxSizing:"border-box",background:"rgba(255,255,255,0.04)", border:"1px solid rgba(255,255,255,0.08)",borderRadius:8,color:"#e4e4e7", fontSize:16,padding:"10px 12px",fontFamily:"'Noto Sans SC','IBM Plex Mono',sans-serif", transition:"border-color 0.15s, box-shadow 0.15s" },
+  dollarWrap: { position:"relative",display:"flex",alignItems:"center" },
+  dollarSign: { position:"absolute",left:10,fontSize:13,color:"#52525b",zIndex:1,pointerEvents:"none" },
+  suggestions: { position:"absolute",top:"100%",left:0,right:0,zIndex:20,marginTop:4, background:"#18181b",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10, overflow:"hidden",boxShadow:"0 8px 24px rgba(0,0,0,0.5)" },
+  suggestionItem: { width:"100%",background:"transparent",border:"none",color:"#d4d4d8",fontSize:12.5, padding:"10px 14px",cursor:"pointer",display:"flex",alignItems:"center",textAlign:"left", borderBottom:"1px solid rgba(255,255,255,0.04)",fontFamily:"'Noto Sans SC',sans-serif" },
+  smallAdd: { background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:7, color:"#a1a1aa",fontSize:11.5,padding:"4px 10px",cursor:"pointer",display:"flex",alignItems:"center",gap:3, fontFamily:"'Noto Sans SC',sans-serif" },
+  itemRow: { display:"flex",gap:8,marginBottom:8,alignItems:"center" },
+  removeBtn: { background:"transparent",border:"none",color:"#52525b",cursor:"pointer",padding:4,flexShrink:0, display:"flex",alignItems:"center" },
+  cancelBtn: { flex:1,background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:10, color:"#a1a1aa",fontSize:13,padding:"11px 16px",cursor:"pointer",fontFamily:"'Noto Sans SC',sans-serif" },
+  saveBtn: { flex:2,background:"rgba(96,165,250,0.15)",border:"1px solid rgba(96,165,250,0.3)",borderRadius:10, color:"#93c5fd",fontSize:13,fontWeight:500,padding:"11px 16px",cursor:"pointer", display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'Noto Sans SC',sans-serif" },
+};
+
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+<script>
+if('serviceWorker' in navigator){navigator.serviceWorker.register('sw.js').catch(e=>console.log('SW:',e))}
+</script>
+</body>
+</html>
