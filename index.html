@@ -56,17 +56,20 @@ function saveLocalCache(data) {
 }
 
 // JSONBin API
-function getAuthHeader(apiKey) {
-  return apiKey.startsWith("$2a") ? { "X-Master-Key": apiKey } : { "X-Access-Key": apiKey };
+function makeHeaders(apiKey, includeContentType) {
+  var h = {};
+  if (includeContentType) h["Content-Type"] = "application/json";
+  if (apiKey.startsWith("$2a")) { h["X-Master-Key"] = apiKey; } else { h["X-Access-Key"] = apiKey; }
+  return h;
 }
 
 async function cloudLoad(cfg) {
-  const res = await fetch(`https://api.jsonbin.io/v3/b/${cfg.binId}/latest`, {
-    headers: { ...getAuthHeader(cfg.apiKey) }
+  const res = await fetch("https://api.jsonbin.io/v3/b/" + cfg.binId + "/latest", {
+    headers: makeHeaders(cfg.apiKey, false)
   });
   if (!res.ok) {
-    let errMsg = "Cloud load: HTTP " + res.status;
-    try { const errBody = await res.json(); errMsg += " - " + (errBody.message || ""); } catch {}
+    let errMsg = "Cloud load failed: " + res.status;
+    try { const errBody = await res.json(); errMsg += " - " + (errBody.message || ""); } catch(ex) {}
     throw new Error(errMsg);
   }
   const json = await res.json();
@@ -76,42 +79,31 @@ async function cloudLoad(cfg) {
 }
 
 async function cloudSave(cfg, data) {
-  const res = await fetch(`https://api.jsonbin.io/v3/b/${cfg.binId}`, {
+  const saveData = data && Object.keys(data).length > 0 ? data : { _empty: true };
+  const res = await fetch("https://api.jsonbin.io/v3/b/" + cfg.binId, {
     method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-      ...getAuthHeader(cfg.apiKey)
-    },
-    body: JSON.stringify(data)
+    headers: makeHeaders(cfg.apiKey, true),
+    body: JSON.stringify(saveData)
   });
   if (!res.ok) {
-    let errMsg = "Cloud save: HTTP " + res.status;
-    try { const errBody = await res.json(); errMsg += " - " + (errBody.message || ""); } catch {}
+    let errMsg = "Cloud save failed: " + res.status;
+    try { const errBody = await res.json(); errMsg += " - " + (errBody.message || ""); } catch(ex) {}
     throw new Error(errMsg);
   }
   return true;
 }
 
 async function cloudCreateBin(apiKey) {
-  const headers = {
-    "Content-Type": "application/json"
-  };
-  if (apiKey.startsWith("$2a")) {
-    headers["X-Master-Key"] = apiKey;
-  } else {
-    headers["X-Access-Key"] = apiKey;
-  }
-  // First try with name
+  var headers = makeHeaders(apiKey, true);
   headers["X-Bin-Name"] = "repair-shop-data";
-  
   const res = await fetch("https://api.jsonbin.io/v3/b", {
     method: "POST",
-    headers,
+    headers: headers,
     body: JSON.stringify({ _app: "repair-shop", _created: new Date().toISOString() })
   });
   if (!res.ok) {
     let errMsg = "HTTP " + res.status;
-    try { const errBody = await res.json(); errMsg += " - " + (errBody.message || JSON.stringify(errBody)); } catch {}
+    try { const errBody = await res.json(); errMsg += " - " + (errBody.message || JSON.stringify(errBody)); } catch(ex) {}
     throw new Error(errMsg);
   }
   const json = await res.json();
