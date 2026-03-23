@@ -64,11 +64,14 @@ async function cloudLoad(cfg) {
   const res = await fetch(`https://api.jsonbin.io/v3/b/${cfg.binId}/latest`, {
     headers: { ...getAuthHeader(cfg.apiKey) }
   });
-  if (!res.ok) throw new Error("Cloud load failed: " + res.status);
+  if (!res.ok) {
+    let errMsg = "Cloud load: HTTP " + res.status;
+    try { const errBody = await res.json(); errMsg += " - " + (errBody.message || ""); } catch {}
+    throw new Error(errMsg);
+  }
   const json = await res.json();
   const record = json.record || {};
-  // Clean init marker
-  if (record._init) { delete record._init; delete record._created; }
+  if (record._app) { delete record._app; delete record._created; }
   return record;
 }
 
@@ -81,30 +84,35 @@ async function cloudSave(cfg, data) {
     },
     body: JSON.stringify(data)
   });
-  if (!res.ok) throw new Error("Cloud save failed: " + res.status);
+  if (!res.ok) {
+    let errMsg = "Cloud save: HTTP " + res.status;
+    try { const errBody = await res.json(); errMsg += " - " + (errBody.message || ""); } catch {}
+    throw new Error(errMsg);
+  }
   return true;
 }
 
 async function cloudCreateBin(apiKey) {
   const headers = {
-    "Content-Type": "application/json",
-    "X-Bin-Name": "repair-shop-data",
-    "X-Bin-Private": "true"
+    "Content-Type": "application/json"
   };
-  // Master keys start with $2a, Access keys start with $2b
   if (apiKey.startsWith("$2a")) {
     headers["X-Master-Key"] = apiKey;
   } else {
     headers["X-Access-Key"] = apiKey;
   }
+  // First try with name
+  headers["X-Bin-Name"] = "repair-shop-data";
+  
   const res = await fetch("https://api.jsonbin.io/v3/b", {
     method: "POST",
     headers,
-    body: JSON.stringify({ _init: true, _created: new Date().toISOString() })
+    body: JSON.stringify({ _app: "repair-shop", _created: new Date().toISOString() })
   });
   if (!res.ok) {
-    const err = await res.text();
-    throw new Error("Create bin failed: " + res.status + " " + err);
+    let errMsg = "HTTP " + res.status;
+    try { const errBody = await res.json(); errMsg += " - " + (errBody.message || JSON.stringify(errBody)); } catch {}
+    throw new Error(errMsg);
   }
   const json = await res.json();
   return json.metadata.id;
