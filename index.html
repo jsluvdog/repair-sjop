@@ -73,8 +73,10 @@ async function cloudLoad(cfg) {
     throw new Error(errMsg);
   }
   const json = await res.json();
-  const record = json.record || {};
-  if (record._app) { delete record._app; delete record._created; }
+  const raw = json.record || {};
+  // Only keep date keys with array values (strip metadata like _app, _empty, _created)
+  const record = {};
+  Object.keys(raw).forEach(k => { if (Array.isArray(raw[k])) record[k] = raw[k]; });
   return record;
 }
 
@@ -304,7 +306,7 @@ function App() {
     }
   }, [cloudCfg]);
 
-  const allRecords = useMemo(() => records ? Object.values(records).flat() : [], [records]);
+  const allRecords = useMemo(() => records ? Object.values(records).filter(v => Array.isArray(v)).flat() : [], [records]);
 
   const vehicleHistory = useMemo(() => {
     if (!selVehicleId) return [];
@@ -335,7 +337,9 @@ function App() {
 
   const handleSaveRecord = useCallback((rec, isNew) => {
     setRecords(prev => {
-      const next = { ...prev };
+      const next = {};
+      // Copy only array entries
+      Object.keys(prev || {}).forEach(dk => { if (Array.isArray(prev[dk])) next[dk] = [...prev[dk]]; });
       const dateKey = rec.date;
       if (!next[dateKey]) next[dateKey] = [];
       if (isNew) {
@@ -345,8 +349,7 @@ function App() {
         if (!next[dateKey]) next[dateKey] = [];
         next[dateKey] = [...next[dateKey], rec];
       }
-      // Clean empty
-      Object.keys(next).forEach(dk => { if (next[dk].length === 0) delete next[dk]; });
+      Object.keys(next).forEach(dk => { if (!next[dk] || next[dk].length === 0) delete next[dk]; });
       return next;
     });
     setShowForm(false);
@@ -356,13 +359,16 @@ function App() {
   }, []);
 
   const handleDeleteRecord = useCallback((rec) => {
+    const dateKey = rec.date;
     setRecords(prev => {
-      const next = { ...prev };
+      const next = {};
+      Object.keys(prev || {}).forEach(dk => { if (Array.isArray(prev[dk])) next[dk] = [...prev[dk]]; });
       Object.keys(next).forEach(dk => { next[dk] = next[dk].filter(r => r.id !== rec.id); });
-      Object.keys(next).forEach(dk => { if (next[dk].length === 0) delete next[dk]; });
+      Object.keys(next).forEach(dk => { if (!next[dk] || next[dk].length === 0) delete next[dk]; });
       return next;
     });
     setSelRecord(null);
+    setSelDate(dateKey);
     setView("day");
   }, []);
 
@@ -949,8 +955,8 @@ function RecordForm({ initial, defaultDate, allRecords, onSave, onCancel }) {
 function getRecordsInRange(records, startDate, endDate) {
   const all = [];
   Object.keys(records).sort().forEach(dk => {
-    if (dk >= startDate && dk <= endDate) {
-      (records[dk] || []).forEach(r => all.push(r));
+    if (dk >= startDate && dk <= endDate && Array.isArray(records[dk])) {
+      records[dk].forEach(r => all.push(r));
     }
   });
   return all;
