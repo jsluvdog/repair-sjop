@@ -213,7 +213,53 @@ function isThisWeek(monday) {
 function sumItems(arr) {
   return (arr || []).reduce((s, i) => s + (Number(i.cost) || 0) * (Number(i.qty) || 1), 0);
 }
+
+// Universal profit calculation: works for both repair and sale
+function calcProfit(r) {
+  if (r.type === "sale") {
+    return (Number(r.salePrice) || 0) - (Number(r.saleCost) || 0);
+  }
+  if (r.type === "wage") {
+    return -(Number(r.wageSettlement) || 0); // wage is pure cost
+  }
+  if (r.type === "purchase") {
+    return -(Number(r.purchaseTotal) || 0); // purchase is pure cost
+  }
+  return (Number(r.quoted) || 0) - sumItems(r.inventoryUsed) - sumItems(r.newParts);
+}
+
+// Universal revenue: what the customer paid (wage/purchase have 0 revenue)
+function calcRevenue(r) {
+  if (r.type === "sale") return Number(r.salePrice) || 0;
+  if (r.type === "wage" || r.type === "purchase") return 0;
+  return Number(r.quoted) || 0;
+}
+
+// Universal cost
+function calcCost(r) {
+  if (r.type === "sale") return Number(r.saleCost) || 0;
+  if (r.type === "wage") return Number(r.wageSettlement) || 0;
+  if (r.type === "purchase") return Number(r.purchaseTotal) || 0;
+  return sumItems(r.inventoryUsed) + sumItems(r.newParts);
+}
+
+// Type labels
+function typeLabel(t) {
+  if (t === "repair") return "维修";
+  if (t === "sale") return "出售";
+  if (t === "wage") return "工资";
+  if (t === "purchase") return "采购";
+  return t;
+}
 function uid() { return "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+
+// Vehicle identity = customer + phone + vehicle combined
+function generateVehicleId(customer, phone, vehicle, plate) {
+  const key = (customer||"").trim().toLowerCase() + "|" + (phone||"").trim() + "|" + (vehicle||"").trim().toLowerCase() + "|" + (plate||"").trim().toUpperCase();
+  var hash = 0;
+  for (var i = 0; i < key.length; i++) { hash = ((hash << 5) - hash) + key.charCodeAt(i); hash |= 0; }
+  return "V-" + Math.abs(hash).toString(36).toUpperCase();
+}
 
 // ─── Icons ────────────────────────────────────────────────
 const Icon = ({ d, size = 18, sw = 1.8 }) => (
@@ -236,6 +282,8 @@ const IReset = () => <Icon d="M1 4v6h6M23 20v-6h-6M20.49 9A9 9 0 005.64 5.64L1 1
 const IHome = () => <Icon d="M3 12l9-9 9 9M5 10v10a1 1 0 001 1h3a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1h3a1 1 0 001-1V10" size={14}/>;
 const IGear = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>;
 const IWarn = () => <Icon d="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" size={18}/>;
+const IPhone = () => <Icon d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z" size={13}/>;
+const ISearch = () => <Icon d="M11 3a8 8 0 100 16 8 8 0 000-16zM21 21l-4.35-4.35" size={16} sw={2}/>;
 
 // ─── Main App ─────────────────────────────────────────────
 function App() {
@@ -315,8 +363,9 @@ function App() {
 
   const goWeek = () => { setView("week"); setSelDate(null); setSelRecord(null); setSelVehicleId(null); setShowForm(false); };
   const goDay = (d) => { setSelDate(d); setView("day"); setSelRecord(null); setShowForm(false); };
-  const goRecord = (r) => { setSelRecord(r); setView("record"); setShowForm(false); };
+  const goRecord = (r) => { setSelRecord(r); setView("record"); setShowForm(false); setSelDate(r.date); };
   const goVehicleHistory = (vid) => { setSelVehicleId(vid); setView("vehicleHistory"); };
+  const goSearch = () => { setView("search"); setShowForm(false); };
 
   const prevWeek = () => {
     const d = new Date(currentMonday);
@@ -412,14 +461,14 @@ function App() {
 
       <header style={S.header}>
         <div style={S.headerInner}>
-          {view !== "week" && view !== "settings" && !showForm && (
+          {view !== "week" && view !== "settings" && view !== "search" && !showForm && (
             <button style={S.navBtn} onClick={() => {
               if (view === "vehicleHistory") goRecord(selRecord);
               else if (view === "record") goDay(selDate);
               else goWeek();
             }}><IBack/></button>
           )}
-          {view === "settings" && (
+          {(view === "settings" || view === "search") && (
             <button style={S.navBtn} onClick={goWeek}><IBack/></button>
           )}
           {showForm && (
@@ -432,7 +481,8 @@ function App() {
                  view === "week" ? "维修记录" :
                  view === "day" ? fmtDate(selDate) :
                  view === "record" ? "记录详情" :
-                 view === "settings" ? "设置" : "车辆历史"}
+                 view === "settings" ? "设置" :
+                 view === "search" ? "搜索" : "车辆历史"}
               </h1>
               {/* Sync indicator */}
               {view === "week" && !showForm && (
@@ -445,7 +495,7 @@ function App() {
             {view === "week" && !showForm && (
               <p style={S.subtitle}>{fmtWeekRange(weekDates)} {thisWeek ? "· 本周" : ""}</p>
             )}
-            {view !== "week" && view !== "settings" && !showForm && (
+            {view !== "week" && view !== "settings" && view !== "search" && !showForm && (
               <p style={S.subtitle}>
                 {view === "day" ? `共 ${(records[selDate]||[]).length} 条记录` :
                  view === "record" ? selRecord?.vehicle :
@@ -453,6 +503,7 @@ function App() {
               </p>
             )}
             {view === "settings" && <p style={S.subtitle}>数据管理</p>}
+            {view === "search" && <p style={S.subtitle}>按客户名、手机号、车型或车牌搜索</p>}
             {showForm && <p style={S.subtitle}>{selDate ? fmtDate(selDate) : "选择日期"}</p>}
           </div>
           <div style={{display:"flex",gap:6,alignItems:"center"}}>
@@ -462,6 +513,7 @@ function App() {
                 {!thisWeek && <button style={{...S.navBtn,padding:"0 8px",fontSize:11,width:"auto",gap:3}} onClick={goThisWeek} title="回到本周"><IHome/><span>本周</span></button>}
                 <button style={S.navBtn} onClick={nextWeek} title="下一周"><IChevronR/></button>
                 <div style={{width:1,height:20,background:"rgba(255,255,255,0.06)",margin:"0 2px"}}/>
+                <button style={S.navBtn} onClick={goSearch} title="搜索"><ISearch/></button>
                 <button style={S.navBtn} onClick={()=>setView("settings")} title="设置"><IGear/></button>
               </>
             )}
@@ -505,6 +557,9 @@ function App() {
             {view === "settings" && (
               <SettingsView onReset={handleReset} totalRecords={allRecords.length} records={records} onImport={handleImport} cloudCfg={cloudCfg} onCloudDisconnect={() => { localStorage.removeItem(CONFIG_KEY); setCloudCfg(null); setNeedSetup(true); }} onRefresh={refreshFromCloud} syncStatus={syncStatus}/>
             )}
+            {view === "search" && (
+              <SearchView allRecords={allRecords} onSelectRecord={goRecord} onSelectVehicle={goVehicleHistory}/>
+            )}
           </>
         )}
       </main>
@@ -516,45 +571,41 @@ function App() {
 function WeekView({ dates, data, onSelect }) {
   // Weekly totals
   const weekTotals = useMemo(() => {
-    let q=0, inv=0, np=0, h=0, count=0;
+    let q=0, cost=0, h=0, count=0;
     dates.forEach(d => {
-      (data[d]||[]).forEach(r => {
-        q += Number(r.quoted||0);
-        inv += sumItems(r.inventoryUsed);
-        np += sumItems(r.newParts);
+      (Array.isArray(data[d]) ? data[d] : []).forEach(r => {
+        q += calcRevenue(r);
+        cost += calcCost(r);
         h += Number(r.hours||0);
         count++;
       });
     });
-    return { q, inv, np, h, count, profit: q - inv - np };
+    return { q, cost, h, count, profit: q - cost };
   }, [dates, data]);
 
   return (
     <div>
-      {/* Week summary bar */}
       {weekTotals.count > 0 && (
         <div style={S.weekSummary}>
           <div style={S.wsStat}><span style={S.wsLabel}>本周总计</span><span style={S.wsCount}>{weekTotals.count} 单</span></div>
-          {/* Profit hero */}
           <div style={{textAlign:"center",padding:"10px 0 14px",marginBottom:12,borderBottom:"1px solid rgba(255,255,255,0.05)"}}>
             <span style={{fontSize:11,color:weekTotals.profit>=0?"#4ade80":"#f87171",display:"block",marginBottom:2}}>本周利润</span>
             <span style={{fontSize:28,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace",color:weekTotals.profit>=0?"#4ade80":"#f87171"}}>${weekTotals.profit.toLocaleString()}</span>
           </div>
           <div style={S.wsNumbers}>
             <div><span style={S.wsSmLabel}>收入</span><span style={S.wsGreen}>${weekTotals.q.toLocaleString()}</span></div>
-            <div><span style={S.wsSmLabel}>成本</span><span style={S.wsMuted}>${(weekTotals.inv+weekTotals.np).toLocaleString()}</span></div>
+            <div><span style={S.wsSmLabel}>成本</span><span style={S.wsMuted}>${weekTotals.cost.toLocaleString()}</span></div>
             <div><span style={S.wsSmLabel}>工时</span><span style={S.wsMuted}>{weekTotals.h}h</span></div>
           </div>
         </div>
       )}
       <div style={S.cardGrid}>
         {dates.map((d, i) => {
-          const recs = data[d] || [];
-          const totalQ = recs.reduce((s,r)=>s+Number(r.quoted||0),0);
-          const totalInv = recs.reduce((s,r)=>s+sumItems(r.inventoryUsed),0);
-          const totalNew = recs.reduce((s,r)=>s+sumItems(r.newParts),0);
+          const recs = Array.isArray(data[d]) ? data[d] : [];
+          const totalQ = recs.reduce((s,r)=>s+calcRevenue(r),0);
+          const totalCost = recs.reduce((s,r)=>s+calcCost(r),0);
           const totalH = recs.reduce((s,r)=>s+(Number(r.hours)||0),0);
-          const dayProfit = totalQ - totalInv - totalNew;
+          const dayProfit = totalQ - totalCost;
           const today = isToday(d);
           return (
             <button key={d} style={{...S.dayCard, animationDelay:`${i*60}ms`, ...(today?S.dayCardToday:{})}} onClick={()=>onSelect(d)}>
@@ -575,9 +626,8 @@ function WeekView({ dates, data, onSelect }) {
                     </div>
                   </div>
                   <div style={S.dayCardBody}>
-                    <div style={S.statRow}><span style={S.statLabel}>报价收入</span><span style={S.valGreen}>${totalQ.toLocaleString()}</span></div>
-                    <div style={S.statRow}><span style={S.statLabel}>库存出库</span><span style={S.valMuted}>${totalInv.toLocaleString()}</span></div>
-                    <div style={S.statRow}><span style={S.statLabel}>新购配件</span><span style={S.valMuted}>${totalNew.toLocaleString()}</span></div>
+                    <div style={S.statRow}><span style={S.statLabel}>收入</span><span style={S.valGreen}>${totalQ.toLocaleString()}</span></div>
+                    <div style={S.statRow}><span style={S.statLabel}>成本</span><span style={S.valMuted}>${totalCost.toLocaleString()}</span></div>
                     <div style={{...S.statRow,borderTop:"1px solid rgba(255,255,255,0.05)",paddingTop:7,marginTop:3}}>
                       <span style={S.statLabel}>工时</span><span style={S.valMuted}>{totalH}h</span>
                     </div>
@@ -616,14 +666,13 @@ function DayView({ records, onSelect }) {
   }
 
   const dayTotals = useMemo(() => {
-    let q=0, inv=0, np=0, h=0;
+    let q=0, cost=0, h=0;
     records.forEach(r => {
-      q += Number(r.quoted||0);
-      inv += sumItems(r.inventoryUsed);
-      np += sumItems(r.newParts);
+      q += calcRevenue(r);
+      cost += calcCost(r);
       h += Number(r.hours||0);
     });
-    return { q, inv, np, h, profit: q - inv - np };
+    return { q, cost, h, profit: q - cost };
   }, [records]);
 
   return (
@@ -642,7 +691,7 @@ function DayView({ records, onSelect }) {
         </div>
         <div style={{display:"flex",gap:16,flexWrap:"wrap",justifyContent:"center"}}>
           <span style={{fontSize:12,color:"#71717a"}}>收入 <span style={{color:"#4ade80",fontFamily:"'IBM Plex Mono',monospace"}}>${dayTotals.q.toLocaleString()}</span></span>
-          <span style={{fontSize:12,color:"#71717a"}}>成本 <span style={{color:"#a1a1aa",fontFamily:"'IBM Plex Mono',monospace"}}>${(dayTotals.inv+dayTotals.np).toLocaleString()}</span></span>
+          <span style={{fontSize:12,color:"#71717a"}}>成本 <span style={{color:"#a1a1aa",fontFamily:"'IBM Plex Mono',monospace"}}>${dayTotals.cost.toLocaleString()}</span></span>
           <span style={{fontSize:12,color:"#71717a"}}>工时 <span style={{color:"#a1a1aa",fontFamily:"'IBM Plex Mono',monospace"}}>{dayTotals.h}h</span></span>
         </div>
       </div>
@@ -650,20 +699,34 @@ function DayView({ records, onSelect }) {
       {records.map((r,i) => {
         const inv = sumItems(r.inventoryUsed);
         const np = sumItems(r.newParts);
+        const profit = calcProfit(r);
         return (
           <button key={r.id} style={{...S.recordCard, animationDelay:`${i*50}ms`}} onClick={()=>onSelect(r)}>
             <div style={S.rcTop}>
               <div style={{display:"flex",alignItems:"center",gap:8}}>
-                <span style={S.badge(r.type)}>{r.type==="repair"?"维修":"出售"}</span>
-                <span style={S.custName}>{r.customer}</span>
+                <span style={S.badge(r.type)}>{typeLabel(r.type)}</span>
+                <span style={S.custName}>{r.type==="wage"?(r.wageName||r.customer):r.type==="purchase"?(r.purchaseItem||r.customer):r.customer}</span>
               </div>
-              <span style={S.rcQuoted}>${Number(r.quoted||0).toLocaleString()}</span>
+              <span style={S.rcQuoted}>{r.type==="wage"||r.type==="purchase"?"-$"+calcCost(r).toLocaleString():"$"+calcRevenue(r).toLocaleString()}</span>
             </div>
-            <div style={S.rcVehicle}><ICar/><span style={{marginLeft:6}}>{r.vehicle}</span></div>
+            {(r.type==="repair"||r.type==="sale") && <div style={S.rcVehicle}><ICar/><span style={{marginLeft:6}}>{r.vehicle}{r.plate ? " · "+r.plate : ""}</span></div>}
+            {(r.type==="repair"||r.type==="sale") && r.phone && <div style={{display:"flex",alignItems:"center",fontSize:12,color:"#71717a",marginBottom:8}}><IPhone/><span style={{marginLeft:5}}>{r.phone}</span></div>}
             <div style={S.rcMeta}>
-              <span style={S.metaI}><IWrench/> 库存 ${inv}</span>
-              <span style={S.metaI}><ITag/> 新购 ${np}</span>
-              <span style={S.metaI}><IClock/> {r.hours}h</span>
+              {r.type==="repair" ? <>
+                <span style={S.metaI}><IWrench/> 库存 ${inv}</span>
+                <span style={S.metaI}><ITag/> 新购 ${np}</span>
+                <span style={S.metaI}><IClock/> {r.hours}h</span>
+              </> : r.type==="sale" ? <>
+                <span style={S.metaI}>成本 ${Number(r.saleCost||0).toLocaleString()}</span>
+                <span style={{...S.metaI,color:profit>=0?"#4ade80":"#f87171"}}>利润 ${profit.toLocaleString()}</span>
+              </> : r.type==="wage" ? <>
+                <span style={S.metaI}>时薪 ${Number(r.wageRate||0)}/h</span>
+                <span style={S.metaI}>{Number(r.wageHours||0)}h</span>
+                <span style={{...S.metaI,color:"#f87171"}}>结算 ${Number(r.wageSettlement||0).toLocaleString()}</span>
+              </> : <>
+                <span style={S.metaI}>${Number(r.purchaseUnitPrice||0)} × {Number(r.purchaseQty||0)}</span>
+                <span style={{...S.metaI,color:"#f87171"}}>总额 ${Number(r.purchaseTotal||0).toLocaleString()}</span>
+              </>}
             </div>
             {r.note && <p style={S.rcNote}>{r.note}</p>}
           </button>
@@ -678,27 +741,30 @@ function RecordDetail({ record: r, onViewHistory, onEdit, onDelete }) {
   const [confirmDel, setConfirmDel] = useState(false);
   const inv = sumItems(r.inventoryUsed);
   const np = sumItems(r.newParts);
-  const profit = Number(r.quoted||0) - inv - np;
+  const profit = calcProfit(r);
+  const revenue = calcRevenue(r);
+  const cost = calcCost(r);
 
   return (
     <div style={S.detailCol}>
       <div style={S.detailTop}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
           <div>
-            <span style={S.badge(r.type)}>{r.type==="repair"?"维修":"出售"}</span>
-            <h2 style={S.detailCust}>{r.customer}</h2>
-            <p style={S.detailVeh}>{r.vehicle}</p>
+            <span style={S.badge(r.type)}>{typeLabel(r.type)}</span>
+            <h2 style={S.detailCust}>{r.type==="wage"?(r.wageName||r.customer):r.type==="purchase"?(r.purchaseItem||r.customer):r.customer}</h2>
+            {(r.type==="repair"||r.type==="sale") && r.phone && <p style={{fontSize:13,color:"#a1a1aa",margin:"0 0 2px",display:"flex",alignItems:"center",gap:5}}><IPhone/>{r.phone}</p>}
+            {(r.type==="repair"||r.type==="sale") && <p style={S.detailVeh}>{r.vehicle}{r.plate ? " · "+r.plate : ""}</p>}
             <p style={S.detailDateText}>{fmtDate(r.date)}</p>
           </div>
           <div style={{textAlign:"right"}}>
-            <span style={{fontSize:11,color:"#71717a"}}>报价收入</span>
-            <div style={S.detailBigQ}>${Number(r.quoted||0).toLocaleString()}</div>
+            <span style={{fontSize:11,color:"#71717a"}}>{r.type==="sale"?"成交价":r.type==="wage"?"结算":r.type==="purchase"?"总金额":"报价收入"}</span>
+            <div style={{...S.detailBigQ,color:r.type==="wage"||r.type==="purchase"?"#f87171":"#4ade80"}}>{r.type==="wage"||r.type==="purchase"?"-":""}${(r.type==="wage"?Number(r.wageSettlement||0):r.type==="purchase"?Number(r.purchaseTotal||0):revenue).toLocaleString()}</div>
           </div>
         </div>
         <div style={{display:"flex",gap:8,marginTop:16,flexWrap:"wrap"}}>
           <button style={S.actionBtn} onClick={onEdit}><IEdit/><span style={{marginLeft:5}}>编辑</span></button>
           <button style={{...S.actionBtn,...S.dangerBtn}} onClick={()=>setConfirmDel(true)}><IDel/><span style={{marginLeft:5}}>删除</span></button>
-          <button style={{...S.actionBtn,flex:1}} onClick={()=>onViewHistory(r.vehicleId)}><IHistory/><span style={{marginLeft:5}}>该车历史</span></button>
+          {(r.type==="repair"||r.type==="sale") && <button style={{...S.actionBtn,flex:1}} onClick={()=>onViewHistory(r.vehicleId)}><IHistory/><span style={{marginLeft:5}}>该车历史</span></button>}
         </div>
         {confirmDel && (
           <div style={S.confirmBar}>
@@ -711,42 +777,90 @@ function RecordDetail({ record: r, onViewHistory, onEdit, onDelete }) {
         )}
       </div>
 
-      <div style={S.section}>
-        <h3 style={S.secTitle}>费用明细</h3>
-        {(r.inventoryUsed||[]).length > 0 && (
-          <div style={{marginBottom:16}}>
-            <p style={S.subLabel}>库存出库（已在仓库）</p>
-            {r.inventoryUsed.map((it,i)=>(
-              <div key={i} style={S.lineItem}><span>{it.item} x{it.qty}</span><span style={S.lineCost}>${(it.cost*it.qty).toLocaleString()}</span></div>
-            ))}
-            <div style={S.lineTotal}><span>小计</span><span>${inv.toLocaleString()}</span></div>
+      {/* Repair detail */}
+      {r.type === "repair" && (
+        <div style={S.section}>
+          <h3 style={S.secTitle}>费用明细</h3>
+          {(r.inventoryUsed||[]).length > 0 && (
+            <div style={{marginBottom:16}}>
+              <p style={S.subLabel}>库存出库（已在仓库）</p>
+              {r.inventoryUsed.map((it,i)=>(
+                <div key={i} style={S.lineItem}><span>{it.item} x{it.qty}</span><span style={S.lineCost}>${(it.cost*it.qty).toLocaleString()}</span></div>
+              ))}
+              <div style={S.lineTotal}><span>小计</span><span>${inv.toLocaleString()}</span></div>
+            </div>
+          )}
+          {(r.newParts||[]).length > 0 && (
+            <div style={{marginBottom:16}}>
+              <p style={S.subLabel}>新购配件支出（新购入的）</p>
+              {r.newParts.map((it,i)=>(
+                <div key={i} style={S.lineItem}><span>{it.item} x{it.qty}</span><span style={S.lineCost}>${(it.cost*it.qty).toLocaleString()}</span></div>
+              ))}
+              <div style={S.lineTotal}><span>小计</span><span>${np.toLocaleString()}</span></div>
+            </div>
+          )}
+          {(r.inventoryUsed||[]).length===0 && (r.newParts||[]).length===0 && (
+            <p style={{color:"rgba(255,255,255,0.25)",fontSize:13}}>无配件记录</p>
+          )}
+          <div style={S.profitRow}>
+            <div><span style={S.profitLabel}>利润</span><span style={S.profitSub}>(报价 - 库存 - 新购)</span></div>
+            <span style={{...S.profitVal,color:profit>=0?"#4ade80":"#f87171"}}>${profit.toLocaleString()}</span>
           </div>
-        )}
-        {(r.newParts||[]).length > 0 && (
-          <div style={{marginBottom:16}}>
-            <p style={S.subLabel}>新购配件支出（新购入的）</p>
-            {r.newParts.map((it,i)=>(
-              <div key={i} style={S.lineItem}><span>{it.item} x{it.qty}</span><span style={S.lineCost}>${(it.cost*it.qty).toLocaleString()}</span></div>
-            ))}
-            <div style={S.lineTotal}><span>小计</span><span>${np.toLocaleString()}</span></div>
-          </div>
-        )}
-        {(r.inventoryUsed||[]).length===0 && (r.newParts||[]).length===0 && (
-          <p style={{color:"rgba(255,255,255,0.25)",fontSize:13}}>无配件记录</p>
-        )}
-        <div style={S.profitRow}>
-          <div><span style={S.profitLabel}>利润</span><span style={S.profitSub}>(报价 - 库存 - 新购)</span></div>
-          <span style={{...S.profitVal,color:profit>=0?"#4ade80":"#f87171"}}>${profit.toLocaleString()}</span>
         </div>
-      </div>
+      )}
 
-      <div style={S.section}>
-        <div style={{display:"flex",gap:24}}>
-          <div>
-            <p style={S.subLabel}>工作时长</p>
-            <p style={S.bigNum}>{r.hours}<span style={S.bigUnit}>小时</span></p>
+      {/* Sale detail */}
+      {r.type === "sale" && (
+        <div style={S.section}>
+          <h3 style={S.secTitle}>交易明细</h3>
+          <div style={S.lineItem}><span>成交价</span><span style={{...S.lineCost,color:"#4ade80"}}>${Number(r.salePrice||0).toLocaleString()}</span></div>
+          <div style={S.lineItem}><span>成本价</span><span style={S.lineCost}>${Number(r.saleCost||0).toLocaleString()}</span></div>
+          <div style={S.profitRow}>
+            <div><span style={S.profitLabel}>利润</span><span style={S.profitSub}>(成交 - 成本)</span></div>
+            <span style={{...S.profitVal,color:profit>=0?"#4ade80":"#f87171"}}>${profit.toLocaleString()}</span>
           </div>
         </div>
+      )}
+
+      {/* Wage detail */}
+      {r.type === "wage" && (
+        <div style={S.section}>
+          <h3 style={S.secTitle}>工资明细</h3>
+          <div style={S.lineItem}><span>员工</span><span style={S.lineCost}>{r.wageName}</span></div>
+          <div style={S.lineItem}><span>时薪</span><span style={S.lineCost}>${Number(r.wageRate||0).toLocaleString()}/h</span></div>
+          <div style={S.lineItem}><span>工时</span><span style={S.lineCost}>{Number(r.wageHours||0)}h</span></div>
+          <div style={{...S.lineItem,fontSize:11,color:"#52525b"}}><span>参考金额 (时薪×工时)</span><span>${(Number(r.wageRate||0)*Number(r.wageHours||0)).toLocaleString()}</span></div>
+          <div style={S.profitRow}>
+            <div><span style={S.profitLabel}>实际结算</span></div>
+            <span style={{...S.profitVal,color:"#f87171"}}>-${Number(r.wageSettlement||0).toLocaleString()}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Purchase detail */}
+      {r.type === "purchase" && (
+        <div style={S.section}>
+          <h3 style={S.secTitle}>采购明细</h3>
+          <div style={S.lineItem}><span>配件名称</span><span style={S.lineCost}>{r.purchaseItem}</span></div>
+          <div style={S.lineItem}><span>单价</span><span style={S.lineCost}>${Number(r.purchaseUnitPrice||0).toLocaleString()}</span></div>
+          <div style={S.lineItem}><span>数量</span><span style={S.lineCost}>{Number(r.purchaseQty||0)}</span></div>
+          <div style={S.profitRow}>
+            <div><span style={S.profitLabel}>总金额</span></div>
+            <span style={{...S.profitVal,color:"#f87171"}}>-${Number(r.purchaseTotal||0).toLocaleString()}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Time & Notes */}
+      <div style={S.section}>
+        {r.type === "repair" && (
+          <div style={{display:"flex",gap:24}}>
+            <div>
+              <p style={S.subLabel}>工作时长</p>
+              <p style={S.bigNum}>{r.hours}<span style={S.bigUnit}>小时</span></p>
+            </div>
+          </div>
+        )}
         {r.note && (
           <div style={{marginTop:16,paddingTop:16,borderTop:"1px solid rgba(255,255,255,0.06)"}}>
             <p style={S.subLabel}>备注</p>
@@ -776,15 +890,20 @@ function VehicleHistoryView({ history, currentId, onSelect }) {
               <div style={S.rcTop}>
                 <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
                   <span style={{fontSize:13,fontFamily:"'IBM Plex Mono',monospace",color:"#d4d4d8"}}>{fmtDate(r.date)}</span>
-                  <span style={S.badge(r.type)}>{r.type==="repair"?"维修":"出售"}</span>
+                  <span style={S.badge(r.type)}>{typeLabel(r.type)}</span>
                   {cur && <span style={S.curBadge}>当前</span>}
                 </div>
-                <span style={S.rcQuoted}>${Number(r.quoted||0).toLocaleString()}</span>
+                <span style={S.rcQuoted}>${calcRevenue(r).toLocaleString()}</span>
               </div>
               <div style={S.rcMeta}>
-                <span style={S.metaI}><IWrench/> 库存 ${inv}</span>
-                <span style={S.metaI}><ITag/> 新购 ${np}</span>
-                <span style={S.metaI}><IClock/> {r.hours}h</span>
+                {r.type==="repair" ? <>
+                  <span style={S.metaI}><IWrench/> 库存 ${inv}</span>
+                  <span style={S.metaI}><ITag/> 新购 ${np}</span>
+                  <span style={S.metaI}><IClock/> {r.hours}h</span>
+                </> : r.type==="sale" ? <>
+                  <span style={S.metaI}>成本 ${Number(r.saleCost||0).toLocaleString()}</span>
+                  <span style={{...S.metaI,color:calcProfit(r)>=0?"#4ade80":"#f87171"}}>利润 ${calcProfit(r).toLocaleString()}</span>
+                </> : null}
               </div>
               {r.note && <p style={S.rcNote}>{r.note}</p>}
             </button>
@@ -795,7 +914,7 @@ function VehicleHistoryView({ history, currentId, onSelect }) {
         <h3 style={S.secTitle}>车辆累计</h3>
         <div style={{display:"flex",gap:28,flexWrap:"wrap"}}>
           <div><p style={S.subLabel}>总次数</p><p style={S.bigNum}>{history.length}<span style={S.bigUnit}>次</span></p></div>
-          <div><p style={S.subLabel}>总收入</p><p style={{...S.bigNum,color:"#4ade80"}}>${history.reduce((s,r)=>s+Number(r.quoted||0),0).toLocaleString()}</p></div>
+          <div><p style={S.subLabel}>总收入</p><p style={{...S.bigNum,color:"#4ade80"}}>${history.reduce((s,r)=>s+calcRevenue(r),0).toLocaleString()}</p></div>
           <div><p style={S.subLabel}>总工时</p><p style={S.bigNum}>{history.reduce((s,r)=>s+(Number(r.hours)||0),0)}<span style={S.bigUnit}>h</span></p></div>
         </div>
       </div>
@@ -807,21 +926,35 @@ function VehicleHistoryView({ history, currentId, onSelect }) {
 function RecordForm({ initial, defaultDate, allRecords, onSave, onCancel }) {
   const isEdit = !!initial?.id;
   const [form, setForm] = useState(() => {
-    if (initial) return { ...initial, inventoryUsed: initial.inventoryUsed?.length ? initial.inventoryUsed : [], newParts: initial.newParts?.length ? initial.newParts : [] };
-    return { id: uid(), vehicleId: "", date: defaultDate || new Date().toISOString().slice(0,10), type: "repair", customer: "", vehicle: "", inventoryUsed: [], newParts: [], quoted: "", hours: "", note: "" };
+    if (initial) return { ...initial, phone: initial.phone || "", plate: initial.plate || "", salePrice: initial.salePrice || "", saleCost: initial.saleCost || "",
+      wageName: initial.wageName || "", wageRate: initial.wageRate || "", wageHours: initial.wageHours || "", wageSettlement: initial.wageSettlement || "",
+      purchaseItem: initial.purchaseItem || "", purchaseUnitPrice: initial.purchaseUnitPrice || "", purchaseQty: initial.purchaseQty || "", purchaseTotal: initial.purchaseTotal || "",
+      inventoryUsed: initial.inventoryUsed?.length ? initial.inventoryUsed : [], newParts: initial.newParts?.length ? initial.newParts : [] };
+    return { id: uid(), vehicleId: "", date: defaultDate || new Date().toISOString().slice(0,10), type: "repair", customer: "", phone: "", plate: "", vehicle: "",
+      inventoryUsed: [], newParts: [], quoted: "", salePrice: "", saleCost: "", hours: "",
+      wageName: "", wageRate: "", wageHours: "", wageSettlement: "",
+      purchaseItem: "", purchaseUnitPrice: "", purchaseQty: "", purchaseTotal: "",
+      note: "" };
   });
 
+  // Generate vehicleId from customer + phone + vehicle
   useEffect(() => {
-    if (!isEdit && form.vehicle) {
-      const vid = "V-" + form.vehicle.replace(/[^a-zA-Z0-9]/g,"").slice(0,12).toUpperCase();
+    if (form.customer && form.vehicle) {
+      const vid = generateVehicleId(form.customer, form.phone, form.vehicle, form.plate);
       setForm(f => ({...f, vehicleId: vid}));
     }
-  }, [form.vehicle, isEdit]);
+  }, [form.customer, form.phone, form.vehicle, form.plate]);
 
-  const existingVehicles = useMemo(() => {
+  // Build existing customer/vehicle combos for autocomplete
+  const existingEntries = useMemo(() => {
     const map = {};
-    allRecords.forEach(r => { if (r.vehicle && r.vehicleId) map[r.vehicle] = { vehicleId: r.vehicleId, customer: r.customer }; });
-    return map;
+    allRecords.forEach(r => {
+      if (r.customer && r.vehicle) {
+        const key = (r.customer||"") + "|" + (r.phone||"") + "|" + (r.vehicle||"") + "|" + (r.plate||"");
+        if (!map[key]) map[key] = { customer: r.customer, phone: r.phone || "", vehicle: r.vehicle, plate: r.plate || "", vehicleId: r.vehicleId };
+      }
+    });
+    return Object.values(map);
   }, [allRecords]);
 
   const set = (k, v) => setForm(f => ({...f, [k]: v}));
@@ -829,25 +962,47 @@ function RecordForm({ initial, defaultDate, allRecords, onSave, onCancel }) {
   const removeItem = (field, idx) => setForm(f => ({...f, [field]: f[field].filter((_,i)=>i!==idx)}));
   const updateItem = (field, idx, key, val) => setForm(f => { const arr=[...f[field]]; arr[idx]={...arr[idx],[key]:val}; return {...f,[field]:arr}; });
 
-  const handleVehicleSelect = (veh) => {
-    const info = existingVehicles[veh];
-    if (info) setForm(f => ({...f, vehicle: veh, vehicleId: info.vehicleId, customer: f.customer || info.customer}));
+  const handleEntrySelect = (entry) => {
+    setForm(f => ({...f, customer: entry.customer, phone: entry.phone, vehicle: entry.vehicle, plate: entry.plate, vehicleId: entry.vehicleId}));
   };
 
   const handleSubmit = () => {
-    if (!form.customer.trim() || !form.vehicle.trim()) return;
+    if ((form.type === "repair" || form.type === "sale") && (!form.customer.trim() || !form.vehicle.trim())) return;
+    if (form.type === "wage" && !form.wageName.toString().trim()) return;
+    if (form.type === "purchase" && !form.purchaseItem.toString().trim()) return;
     const cleaned = { ...form, quoted: Number(form.quoted)||0, hours: Number(form.hours)||0,
+      salePrice: Number(form.salePrice)||0, saleCost: Number(form.saleCost)||0,
+      wageRate: Number(form.wageRate)||0, wageHours: Number(form.wageHours)||0, wageSettlement: Number(form.wageSettlement)||0,
+      purchaseUnitPrice: Number(form.purchaseUnitPrice)||0, purchaseQty: Number(form.purchaseQty)||0, purchaseTotal: Number(form.purchaseTotal)||0,
       inventoryUsed: form.inventoryUsed.filter(i=>i.item.trim()).map(i=>({...i, qty:Number(i.qty)||1, cost:Number(i.cost)||0})),
       newParts: form.newParts.filter(i=>i.item.trim()).map(i=>({...i, qty:Number(i.qty)||1, cost:Number(i.cost)||0})),
     };
-    if (!cleaned.vehicleId) cleaned.vehicleId = "V-" + Date.now().toString(36).toUpperCase();
+    // For wage/purchase, customer/vehicle are optional - use wageName/purchaseItem as fallback
+    if (form.type === "wage") {
+      if (!cleaned.wageName.toString().trim()) return;
+      if (!cleaned.customer) cleaned.customer = cleaned.wageName.toString();
+      if (!cleaned.vehicle) cleaned.vehicle = "工资记录";
+    }
+    if (form.type === "purchase") {
+      if (!cleaned.purchaseItem.toString().trim()) return;
+      if (!cleaned.customer) cleaned.customer = "采购";
+      if (!cleaned.vehicle) cleaned.vehicle = cleaned.purchaseItem.toString();
+    }
+    if (!cleaned.vehicleId) cleaned.vehicleId = generateVehicleId(cleaned.customer, cleaned.phone, cleaned.vehicle, cleaned.plate);
     onSave(cleaned, !isEdit);
   };
 
-  const vehicleSuggestions = useMemo(() => {
-    if (!form.vehicle || form.vehicle.length < 2) return [];
-    return Object.keys(existingVehicles).filter(v => v.toLowerCase().includes(form.vehicle.toLowerCase())).slice(0, 5);
-  }, [form.vehicle, existingVehicles]);
+  // Autocomplete suggestions based on customer name or phone
+  const suggestions = useMemo(() => {
+    const q = (form.customer || "").trim().toLowerCase();
+    const p = (form.phone || "").trim();
+    if (!q && !p) return [];
+    return existingEntries.filter(e => {
+      if (q && e.customer.toLowerCase().includes(q)) return true;
+      if (p && p.length >= 3 && (e.phone||"").includes(p)) return true;
+      return false;
+    }).slice(0, 5);
+  }, [form.customer, form.phone, existingEntries]);
 
   const [showSugg, setShowSugg] = useState(false);
 
@@ -865,84 +1020,215 @@ function RecordForm({ initial, defaultDate, allRecords, onSave, onCancel }) {
             <select value={form.type} onChange={e=>set("type",e.target.value)} style={S.input}>
               <option value="repair">维修</option>
               <option value="sale">出售</option>
+              <option value="wage">工资</option>
+              <option value="purchase">采购</option>
             </select>
           </div>
         </div>
-        <div style={S.field}>
-          <label style={S.label}>客户名</label>
-          <input value={form.customer} onChange={e=>set("customer",e.target.value)} placeholder="例: John Smith / 王先生" style={S.input}/>
-        </div>
-        <div style={{...S.field,position:"relative"}}>
-          <label style={S.label}>车辆信息</label>
-          <input value={form.vehicle} onChange={e=>{set("vehicle",e.target.value);setShowSugg(true);}} onFocus={()=>setShowSugg(true)} onBlur={()=>setTimeout(()=>setShowSugg(false),200)} placeholder="例: 2022 Toyota Camry · VA ABC-1234" style={S.input}/>
-          {showSugg && vehicleSuggestions.length > 0 && (
-            <div style={S.suggestions}>
-              {vehicleSuggestions.map(v=>(<button key={v} style={S.suggestionItem} onMouseDown={()=>{handleVehicleSelect(v);setShowSugg(false);}}><ICar/><span style={{marginLeft:6}}>{v}</span></button>))}
+
+        {/* Customer fields for repair/sale */}
+        {(form.type === "repair" || form.type === "sale") && <>
+          <div style={{...S.field,position:"relative"}}>
+            <label style={S.label}>客户名</label>
+            <input value={form.customer} onChange={e=>{set("customer",e.target.value);setShowSugg(true);}} onFocus={()=>setShowSugg(true)} onBlur={()=>setTimeout(()=>setShowSugg(false),200)} placeholder="例: John Smith / 王先生" style={S.input}/>
+            {showSugg && suggestions.length > 0 && (
+              <div style={S.suggestions}>
+                {suggestions.map((e,i)=>(<button key={i} style={S.suggestionItem} onMouseDown={()=>{handleEntrySelect(e);setShowSugg(false);}}>
+                  <div><span style={{color:"#fafafa"}}>{e.customer}</span>{e.phone && <span style={{color:"#71717a",marginLeft:8,fontSize:11}}>{e.phone}</span>}</div>
+                  <div style={{fontSize:11,color:"#52525b",marginTop:2}}>{e.vehicle}{e.plate ? " · " + e.plate : ""}</div>
+                </button>))}
+              </div>
+            )}
+          </div>
+          <div style={S.field}>
+            <label style={S.label}>手机号</label>
+            <input value={form.phone} onChange={e=>{set("phone",e.target.value);setShowSugg(true);}} onFocus={()=>setShowSugg(true)} onBlur={()=>setTimeout(()=>setShowSugg(false),200)} placeholder="例: (703) 555-1234" type="tel" style={S.input}/>
+          </div>
+          <div style={S.formGrid}>
+            <div style={S.field}>
+              <label style={S.label}>车型</label>
+              <input value={form.vehicle} onChange={e=>set("vehicle",e.target.value)} placeholder="例: 2022 Toyota Camry" style={S.input}/>
             </div>
-          )}
-        </div>
-      </div>
-
-      <div style={S.section}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-          <h3 style={{...S.secTitle,margin:0}}>库存出库 <span style={{fontWeight:400,color:"#52525b",fontSize:11}}>（已在仓库的）</span></h3>
-          <button style={S.smallAdd} onClick={()=>addItem("inventoryUsed")}><IPlus/> 添加</button>
-        </div>
-        {form.inventoryUsed.map((it,idx)=>(
-          <div key={idx} style={S.itemRow}>
-            <input value={it.item} onChange={e=>updateItem("inventoryUsed",idx,"item",e.target.value)} placeholder="配件名称" style={{...S.input,flex:2}}/>
-            <input value={it.qty} onChange={e=>updateItem("inventoryUsed",idx,"qty",e.target.value)} placeholder="qty" type="number" min="1" style={{...S.input,flex:0,width:55,textAlign:"center"}}/>
-            <div style={{...S.dollarWrap,flex:0}}><span style={S.dollarSign}>$</span><input value={it.cost} onChange={e=>updateItem("inventoryUsed",idx,"cost",e.target.value)} placeholder="0" type="number" style={{...S.input,width:85,paddingLeft:20}}/></div>
-            <button style={S.removeBtn} onClick={()=>removeItem("inventoryUsed",idx)}><IDel/></button>
+            <div style={S.field}>
+              <label style={S.label}>车牌号</label>
+              <input value={form.plate} onChange={e=>set("plate",e.target.value.toUpperCase())} placeholder="例: VA ABC-1234" style={{...S.input,textTransform:"uppercase"}}/>
+            </div>
           </div>
-        ))}
-        {form.inventoryUsed.length === 0 && <p style={{color:"#3f3f46",fontSize:12,margin:0}}>暂无 — 点击「添加」</p>}
-      </div>
+        </>}
 
-      <div style={S.section}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-          <h3 style={{...S.secTitle,margin:0}}>新购配件 <span style={{fontWeight:400,color:"#52525b",fontSize:11}}>（新购入的）</span></h3>
-          <button style={S.smallAdd} onClick={()=>addItem("newParts")}><IPlus/> 添加</button>
-        </div>
-        {form.newParts.map((it,idx)=>(
-          <div key={idx} style={S.itemRow}>
-            <input value={it.item} onChange={e=>updateItem("newParts",idx,"item",e.target.value)} placeholder="配件名称" style={{...S.input,flex:2}}/>
-            <input value={it.qty} onChange={e=>updateItem("newParts",idx,"qty",e.target.value)} placeholder="qty" type="number" min="1" style={{...S.input,flex:0,width:55,textAlign:"center"}}/>
-            <div style={{...S.dollarWrap,flex:0}}><span style={S.dollarSign}>$</span><input value={it.cost} onChange={e=>updateItem("newParts",idx,"cost",e.target.value)} placeholder="0" type="number" style={{...S.input,width:85,paddingLeft:20}}/></div>
-            <button style={S.removeBtn} onClick={()=>removeItem("newParts",idx)}><IDel/></button>
-          </div>
-        ))}
-        {form.newParts.length === 0 && <p style={{color:"#3f3f46",fontSize:12,margin:0}}>暂无 — 点击「添加」</p>}
-      </div>
-
-      <div style={S.section}>
-        <h3 style={S.secTitle}>收入与工时</h3>
-        <div style={S.formGrid}>
+        {/* Wage fields */}
+        {form.type === "wage" && <>
           <div style={S.field}>
-            <label style={S.label}>报价收入（客户付款）</label>
-            <div style={S.dollarWrap}><span style={S.dollarSign}>$</span><input value={form.quoted} onChange={e=>set("quoted",e.target.value)} type="number" placeholder="0" style={{...S.input,paddingLeft:20}}/></div>
+            <label style={S.label}>员工名</label>
+            <input value={form.wageName} onChange={e=>set("wageName",e.target.value)} placeholder="例: Mike / 小李" style={S.input}/>
+          </div>
+          <div style={S.formGrid}>
+            <div style={S.field}>
+              <label style={S.label}>时薪</label>
+              <div style={S.dollarWrap}><span style={S.dollarSign}>$</span><input value={form.wageRate} onChange={e=>set("wageRate",e.target.value)} type="number" placeholder="0" style={{...S.input,paddingLeft:20}}/></div>
+            </div>
+            <div style={S.field}>
+              <label style={S.label}>工时</label>
+              <input value={form.wageHours} onChange={e=>set("wageHours",e.target.value)} type="number" step="0.5" placeholder="0" style={S.input}/>
+            </div>
           </div>
           <div style={S.field}>
-            <label style={S.label}>工作时长（小时）</label>
-            <input value={form.hours} onChange={e=>set("hours",e.target.value)} type="number" step="0.5" placeholder="0" style={S.input}/>
+            <label style={S.label}>结算（实际支付金额）</label>
+            <div style={S.dollarWrap}><span style={S.dollarSign}>$</span><input value={form.wageSettlement} onChange={e=>set("wageSettlement",e.target.value)} type="number" placeholder="0" style={{...S.input,paddingLeft:20}}/></div>
           </div>
-        </div>
-        <div style={S.field}>
-          <label style={S.label}>备注</label>
-          <textarea value={form.note} onChange={e=>set("note",e.target.value)} placeholder="维修内容、客户要求..." rows={3} style={{...S.input,resize:"vertical",lineHeight:1.5}}/>
-        </div>
+        </>}
+
+        {/* Purchase fields */}
+        {form.type === "purchase" && <>
+          <div style={S.field}>
+            <label style={S.label}>配件名称</label>
+            <input value={form.purchaseItem} onChange={e=>set("purchaseItem",e.target.value)} placeholder="例: 机油 5W-30 / 刹车片" style={S.input}/>
+          </div>
+          <div style={S.formGrid}>
+            <div style={S.field}>
+              <label style={S.label}>单价</label>
+              <div style={S.dollarWrap}><span style={S.dollarSign}>$</span><input value={form.purchaseUnitPrice} onChange={e=>set("purchaseUnitPrice",e.target.value)} type="number" placeholder="0" style={{...S.input,paddingLeft:20}}/></div>
+            </div>
+            <div style={S.field}>
+              <label style={S.label}>数量</label>
+              <input value={form.purchaseQty} onChange={e=>set("purchaseQty",e.target.value)} type="number" min="1" placeholder="1" style={S.input}/>
+            </div>
+          </div>
+          <div style={S.field}>
+            <label style={S.label}>总金额</label>
+            <div style={S.dollarWrap}><span style={S.dollarSign}>$</span><input value={form.purchaseTotal} onChange={e=>set("purchaseTotal",e.target.value)} type="number" placeholder="0" style={{...S.input,paddingLeft:20}}/></div>
+          </div>
+        </>}
       </div>
 
+      {/* ── Repair-only sections ── */}
+      {form.type === "repair" && <>
+        <div style={S.section}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+            <h3 style={{...S.secTitle,margin:0}}>库存出库 <span style={{fontWeight:400,color:"#52525b",fontSize:11}}>（已在仓库的）</span></h3>
+            <button style={S.smallAdd} onClick={()=>addItem("inventoryUsed")}><IPlus/> 添加</button>
+          </div>
+          {form.inventoryUsed.map((it,idx)=>(
+            <div key={idx} style={S.itemRow}>
+              <input value={it.item} onChange={e=>updateItem("inventoryUsed",idx,"item",e.target.value)} placeholder="配件名称" style={{...S.input,flex:2}}/>
+              <input value={it.qty} onChange={e=>updateItem("inventoryUsed",idx,"qty",e.target.value)} placeholder="qty" type="number" min="1" style={{...S.input,flex:0,width:55,textAlign:"center"}}/>
+              <div style={{...S.dollarWrap,flex:0}}><span style={S.dollarSign}>$</span><input value={it.cost} onChange={e=>updateItem("inventoryUsed",idx,"cost",e.target.value)} placeholder="0" type="number" style={{...S.input,width:85,paddingLeft:20}}/></div>
+              <button style={S.removeBtn} onClick={()=>removeItem("inventoryUsed",idx)}><IDel/></button>
+            </div>
+          ))}
+          {form.inventoryUsed.length === 0 && <p style={{color:"#3f3f46",fontSize:12,margin:0}}>暂无 — 点击「添加」</p>}
+        </div>
+
+        <div style={S.section}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+            <h3 style={{...S.secTitle,margin:0}}>新购配件 <span style={{fontWeight:400,color:"#52525b",fontSize:11}}>（新购入的）</span></h3>
+            <button style={S.smallAdd} onClick={()=>addItem("newParts")}><IPlus/> 添加</button>
+          </div>
+          {form.newParts.map((it,idx)=>(
+            <div key={idx} style={S.itemRow}>
+              <input value={it.item} onChange={e=>updateItem("newParts",idx,"item",e.target.value)} placeholder="配件名称" style={{...S.input,flex:2}}/>
+              <input value={it.qty} onChange={e=>updateItem("newParts",idx,"qty",e.target.value)} placeholder="qty" type="number" min="1" style={{...S.input,flex:0,width:55,textAlign:"center"}}/>
+              <div style={{...S.dollarWrap,flex:0}}><span style={S.dollarSign}>$</span><input value={it.cost} onChange={e=>updateItem("newParts",idx,"cost",e.target.value)} placeholder="0" type="number" style={{...S.input,width:85,paddingLeft:20}}/></div>
+              <button style={S.removeBtn} onClick={()=>removeItem("newParts",idx)}><IDel/></button>
+            </div>
+          ))}
+          {form.newParts.length === 0 && <p style={{color:"#3f3f46",fontSize:12,margin:0}}>暂无 — 点击「添加」</p>}
+        </div>
+
+        <div style={S.section}>
+          <h3 style={S.secTitle}>收入与工时</h3>
+          <div style={S.formGrid}>
+            <div style={S.field}>
+              <label style={S.label}>报价收入（客户付款）</label>
+              <div style={S.dollarWrap}><span style={S.dollarSign}>$</span><input value={form.quoted} onChange={e=>set("quoted",e.target.value)} type="number" placeholder="0" style={{...S.input,paddingLeft:20}}/></div>
+            </div>
+            <div style={S.field}>
+              <label style={S.label}>工作时长（小时）</label>
+              <input value={form.hours} onChange={e=>set("hours",e.target.value)} type="number" step="0.5" placeholder="0" style={S.input}/>
+            </div>
+          </div>
+          <div style={S.field}>
+            <label style={S.label}>备注</label>
+            <textarea value={form.note} onChange={e=>set("note",e.target.value)} placeholder="维修内容、客户要求..." rows={3} style={{...S.input,resize:"vertical",lineHeight:1.5}}/>
+          </div>
+        </div>
+      </>}
+
+      {/* ── Sale-only sections ── */}
+      {form.type === "sale" && <>
+        <div style={S.section}>
+          <h3 style={S.secTitle}>交易信息</h3>
+          <div style={S.formGrid}>
+            <div style={S.field}>
+              <label style={S.label}>成交价（客户付款）</label>
+              <div style={S.dollarWrap}><span style={S.dollarSign}>$</span><input value={form.salePrice} onChange={e=>set("salePrice",e.target.value)} type="number" placeholder="0" style={{...S.input,paddingLeft:20}}/></div>
+            </div>
+            <div style={S.field}>
+              <label style={S.label}>成本价</label>
+              <div style={S.dollarWrap}><span style={S.dollarSign}>$</span><input value={form.saleCost} onChange={e=>set("saleCost",e.target.value)} type="number" placeholder="0" style={{...S.input,paddingLeft:20}}/></div>
+            </div>
+          </div>
+          <div style={S.field}>
+            <label style={S.label}>备注</label>
+            <textarea value={form.note} onChange={e=>set("note",e.target.value)} placeholder="交易备注..." rows={3} style={{...S.input,resize:"vertical",lineHeight:1.5}}/>
+          </div>
+        </div>
+      </>}
+
+      {/* ── Wage-only sections ── */}
+      {form.type === "wage" && <>
+        <div style={S.section}>
+          <div style={S.field}>
+            <label style={S.label}>备注</label>
+            <textarea value={form.note} onChange={e=>set("note",e.target.value)} placeholder="工作内容备注..." rows={3} style={{...S.input,resize:"vertical",lineHeight:1.5}}/>
+          </div>
+        </div>
+      </>}
+
+      {/* ── Purchase-only sections ── */}
+      {form.type === "purchase" && <>
+        <div style={S.section}>
+          <div style={S.field}>
+            <label style={S.label}>备注</label>
+            <textarea value={form.note} onChange={e=>set("note",e.target.value)} placeholder="采购备注..." rows={3} style={{...S.input,resize:"vertical",lineHeight:1.5}}/>
+          </div>
+        </div>
+      </>}
+
+      {/* ── Preview & Submit ── */}
       <div style={S.section}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-          <span style={{fontSize:13,color:"#71717a"}}>预览利润</span>
+          <span style={{fontSize:13,color:"#71717a"}}>{form.type==="wage"||form.type==="purchase"?"成本":"预览利润"}</span>
           <span style={{fontSize:18,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace",color:
-            (Number(form.quoted||0)-sumItems(form.inventoryUsed)-sumItems(form.newParts))>=0?"#4ade80":"#f87171"
-          }}>${(Number(form.quoted||0)-sumItems(form.inventoryUsed)-sumItems(form.newParts)).toLocaleString()}</span>
+            (form.type==="sale"
+              ? (Number(form.salePrice||0)-Number(form.saleCost||0))
+              : form.type==="wage"
+              ? -(Number(form.wageSettlement||0))
+              : form.type==="purchase"
+              ? -(Number(form.purchaseTotal||0))
+              : (Number(form.quoted||0)-sumItems(form.inventoryUsed)-sumItems(form.newParts))
+            )>=0?"#4ade80":"#f87171"
+          }}>{form.type==="wage"||form.type==="purchase"?"-":""}${Math.abs(
+            form.type==="sale"
+              ? (Number(form.salePrice||0)-Number(form.saleCost||0))
+              : form.type==="wage"
+              ? Number(form.wageSettlement||0)
+              : form.type==="purchase"
+              ? Number(form.purchaseTotal||0)
+              : (Number(form.quoted||0)-sumItems(form.inventoryUsed)-sumItems(form.newParts))
+          ).toLocaleString()}</span>
         </div>
         <div style={{display:"flex",gap:10}}>
           <button style={S.cancelBtn} onClick={onCancel}>取消</button>
-          <button style={{...S.saveBtn,opacity:(!form.customer.trim()||!form.vehicle.trim())?0.4:1}} disabled={!form.customer.trim()||!form.vehicle.trim()} onClick={handleSubmit}>
+          <button style={{...S.saveBtn,opacity:(
+            (form.type==="repair"||form.type==="sale") ? (!form.customer.trim()||!form.vehicle.trim()) :
+            form.type==="wage" ? !form.wageName.toString().trim() :
+            form.type==="purchase" ? !form.purchaseItem.toString().trim() : true
+          )?0.4:1}} disabled={(
+            (form.type==="repair"||form.type==="sale") ? (!form.customer.trim()||!form.vehicle.trim()) :
+            form.type==="wage" ? !form.wageName.toString().trim() :
+            form.type==="purchase" ? !form.purchaseItem.toString().trim() : true
+          )} onClick={handleSubmit}>
             <ISave/><span style={{marginLeft:6}}>{isEdit?"保存修改":"保存记录"}</span>
           </button>
         </div>
@@ -972,6 +1258,8 @@ function buildExportRows(recs) {
       date: r.date,
       type: r.type === "repair" ? "维修" : "出售",
       customer: r.customer,
+      phone: r.phone || "",
+      plate: r.plate || "",
       vehicle: r.vehicle,
       invItems: (r.inventoryUsed || []).map(i => `${i.item} x${i.qty} $${i.cost * i.qty}`).join("; "),
       invTotal,
@@ -1118,6 +1406,128 @@ tr:nth-child(even){background:#f8fafc}
 }
 
 // ─── Settings View ────────────────────────────────────────
+// ─── Search View ──────────────────────────────────────────
+function SearchView({ allRecords, onSelectRecord, onSelectVehicle }) {
+  const [query, setQuery] = useState("");
+  const inputRef = React.createRef();
+
+  useEffect(() => { if (inputRef.current) inputRef.current.focus(); }, []);
+
+  // Build unique customers/vehicles for suggestions
+  const searchIndex = useMemo(() => {
+    const customers = {};
+    allRecords.forEach(r => {
+      const key = (r.customer||"") + "|" + (r.phone||"") + "|" + (r.vehicle||"") + "|" + (r.plate||"");
+      if (!customers[key]) {
+        customers[key] = { customer: r.customer, phone: r.phone || "", vehicle: r.vehicle, plate: r.plate || "", vehicleId: r.vehicleId, count: 0, lastDate: r.date };
+      }
+      customers[key].count++;
+      if (r.date > customers[key].lastDate) customers[key].lastDate = r.date;
+    });
+    return Object.values(customers);
+  }, [allRecords]);
+
+  const results = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    return searchIndex.filter(e => {
+      if (e.customer.toLowerCase().includes(q)) return true;
+      if ((e.phone||"").includes(q)) return true;
+      if (e.vehicle.toLowerCase().includes(q)) return true;
+      if ((e.plate||"").toLowerCase().includes(q)) return true;
+      return false;
+    }).sort((a,b) => b.lastDate.localeCompare(a.lastDate)).slice(0, 20);
+  }, [query, searchIndex]);
+
+  // Get all records for a specific vehicle
+  const getVehicleRecords = (vehicleId) => {
+    return allRecords.filter(r => r.vehicleId === vehicleId).sort((a,b) => b.date.localeCompare(a.date));
+  };
+
+  const [expandedVid, setExpandedVid] = useState(null);
+
+  return (
+    <div style={{...S.listCol,animation:"fadeUp 0.3s ease both"}}>
+      {/* Search input */}
+      <div style={{position:"relative"}}>
+        <div style={{position:"absolute",left:14,top:"50%",transform:"translateY(-50%)",color:"#52525b",pointerEvents:"none"}}><ISearch/></div>
+        <input ref={inputRef} value={query} onChange={e=>setQuery(e.target.value)} placeholder="输入客户名、手机号、车型或车牌号..." style={{...S.input,paddingLeft:42,fontSize:16,padding:"14px 14px 14px 42px",borderRadius:12}}/>
+      </div>
+
+      {/* Quick stats */}
+      {!query && (
+        <div style={{...S.section,textAlign:"center",padding:"24px 18px"}}>
+          <p style={{color:"#52525b",fontSize:13,margin:0}}>输入关键词搜索客户的历史记录</p>
+          <p style={{color:"#3f3f46",fontSize:12,margin:"8px 0 0"}}>支持搜索：客户名、手机号、车型、车牌号</p>
+          <p style={{color:"#3f3f46",fontSize:12,margin:"4px 0 0"}}>共 {searchIndex.length} 个客户/车辆</p>
+        </div>
+      )}
+
+      {/* Results */}
+      {query && results.length === 0 && (
+        <div style={{textAlign:"center",padding:"40px 20px"}}>
+          <p style={{color:"#52525b",fontSize:14}}>没有找到匹配的记录</p>
+        </div>
+      )}
+
+      {results.map((e, i) => {
+        const isExpanded = expandedVid === e.vehicleId;
+        const vRecords = isExpanded ? getVehicleRecords(e.vehicleId) : [];
+        return (
+          <div key={e.vehicleId + i} style={{animation:"fadeUp 0.3s ease both",animationDelay:i*40+"ms"}}>
+            <button style={{...S.recordCard,marginBottom:0}} onClick={() => setExpandedVid(isExpanded ? null : e.vehicleId)}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                <div style={{flex:1}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                    <span style={S.custName}>{e.customer}</span>
+                    <span style={{fontSize:11,color:"#71717a",fontFamily:"'IBM Plex Mono',monospace",background:"rgba(255,255,255,0.04)",padding:"1px 6px",borderRadius:4}}>{e.count}次</span>
+                  </div>
+                  {e.phone && <div style={{display:"flex",alignItems:"center",gap:4,fontSize:12,color:"#71717a",marginBottom:3}}><IPhone/>{e.phone}</div>}
+                  <div style={{display:"flex",alignItems:"center",gap:4,fontSize:12.5,color:"#a1a1aa"}}><ICar/><span style={{marginLeft:2}}>{e.vehicle}{e.plate ? " · "+e.plate : ""}</span></div>
+                </div>
+                <div style={{color:"#3f3f46",transform:isExpanded?"rotate(90deg)":"none",transition:"transform 0.2s"}}><IChevronR/></div>
+              </div>
+            </button>
+
+            {/* Expanded: show all records for this vehicle */}
+            {isExpanded && (
+              <div style={{borderLeft:"2px solid rgba(96,165,250,0.2)",marginLeft:16,paddingLeft:12,marginTop:6,marginBottom:10}}>
+                {vRecords.map((r,j) => {
+                  const inv = sumItems(r.inventoryUsed);
+                  const np = sumItems(r.newParts);
+                  const profit = calcProfit(r);
+                  return (
+                    <button key={r.id} style={{...S.recordCard,padding:12,marginBottom:6,animation:"fadeUp 0.25s ease both",animationDelay:j*30+"ms"}} onClick={() => onSelectRecord(r)}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                        <div style={{display:"flex",alignItems:"center",gap:6}}>
+                          <span style={{fontSize:12,fontFamily:"'IBM Plex Mono',monospace",color:"#a1a1aa"}}>{fmtDate(r.date)}</span>
+                          <span style={S.badge(r.type)}>{typeLabel(r.type)}</span>
+                        </div>
+                        <span style={{fontSize:13,fontWeight:600,fontFamily:"'IBM Plex Mono',monospace",color:"#4ade80"}}>${calcRevenue(r).toLocaleString()}</span>
+                      </div>
+                      <div style={S.rcMeta}>
+                        <span style={S.metaI}><IWrench/> ${inv}</span>
+                        <span style={S.metaI}><ITag/> ${np}</span>
+                        <span style={{...S.metaI,color:profit>=0?"#4ade80":"#f87171"}}>利润 ${profit.toLocaleString()}</span>
+                      </div>
+                      {r.note && <p style={{fontSize:11,color:"#52525b",margin:"6px 0 0",lineHeight:1.4}}>{r.note}</p>}
+                    </button>
+                  );
+                })}
+                <div style={{display:"flex",gap:12,padding:"6px 0",fontSize:12,color:"#71717a",flexWrap:"wrap"}}>
+                  <span>总计: <span style={{color:"#4ade80",fontFamily:"'IBM Plex Mono',monospace"}}>${vRecords.reduce((s,r)=>s+Number(r.quoted||0),0).toLocaleString()}</span></span>
+                  <span>利润: <span style={{color:"#4ade80",fontFamily:"'IBM Plex Mono',monospace"}}>${vRecords.reduce((s,r)=>s+Number(r.quoted||0)-sumItems(r.inventoryUsed)-sumItems(r.newParts),0).toLocaleString()}</span></span>
+                  <span>工时: <span style={{fontFamily:"'IBM Plex Mono',monospace"}}>{vRecords.reduce((s,r)=>s+Number(r.hours||0),0)}h</span></span>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Cloud Setup Screen ───────────────────────────────────
 function CloudSetup({ onComplete }) {
   const [apiKey, setApiKey] = useState("");
@@ -1462,7 +1872,9 @@ const S = {
   emptyState: { display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center", padding:"60px 20px",color:"#3f3f46" },
   recordCard: { background:"rgba(255,255,255,0.025)",border:"1px solid rgba(255,255,255,0.055)",borderRadius:14,padding:16, cursor:"pointer",textAlign:"left",color:"inherit",width:"100%",animation:"fadeUp 0.35s ease both" },
   rcTop: { display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8 },
-  badge: (t) => ({ fontSize:10.5,fontWeight:500,padding:"2px 7px",borderRadius:5, background:t==="repair"?"rgba(59,130,246,0.12)":"rgba(234,179,8,0.12)", color:t==="repair"?"#60a5fa":"#facc15" }),
+  badge: (t) => ({ fontSize:10.5,fontWeight:500,padding:"2px 7px",borderRadius:5,
+    background:t==="repair"?"rgba(59,130,246,0.12)":t==="sale"?"rgba(234,179,8,0.12)":t==="wage"?"rgba(168,85,247,0.12)":"rgba(34,197,94,0.12)",
+    color:t==="repair"?"#60a5fa":t==="sale"?"#facc15":t==="wage"?"#c084fc":"#4ade80" }),
   custName: { fontSize:14.5,fontWeight:500,color:"#fafafa" },
   rcQuoted: { fontSize:15,fontWeight:600,fontFamily:"'IBM Plex Mono',monospace",color:"#4ade80" },
   rcVehicle: { display:"flex",alignItems:"center",fontSize:12.5,color:"#a1a1aa",marginBottom:8 },
