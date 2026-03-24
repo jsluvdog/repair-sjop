@@ -175,6 +175,15 @@ function importDataJSON(file) {
 // ─── Date Helpers ─────────────────────────────────────────
 const WEEKDAYS = ["周日","周一","周二","周三","周四","周五","周六"];
 
+// Get local date string YYYY-MM-DD (not UTC!)
+function localDateStr(date) {
+  const d = date || new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return y + "-" + m + "-" + day;
+}
+
 function getMondayOfWeek(date) {
   const d = new Date(date);
   const day = d.getDay();
@@ -188,7 +197,7 @@ function getWeekDates(mondayDate) {
   for (let i = 0; i < 6; i++) {
     const d = new Date(mondayDate);
     d.setDate(mondayDate.getDate() + i);
-    dates.push(d.toISOString().slice(0, 10));
+    dates.push(localDateStr(d));
   }
   return dates;
 }
@@ -204,7 +213,7 @@ function fmtWeekRange(dates) {
   return `${s.getMonth()+1}/${s.getDate()} — ${e.getMonth()+1}/${e.getDate()}`;
 }
 
-function isToday(ds) { return ds === new Date().toISOString().slice(0, 10); }
+function isToday(ds) { return ds === localDateStr(); }
 function isThisWeek(monday) {
   const now = getMondayOfWeek(new Date());
   return monday.getTime() === now.getTime();
@@ -955,7 +964,7 @@ function RecordForm({ initial, defaultDate, allRecords, onSave, onCancel }) {
       wageName: initial.wageName || "", wageRate: initial.wageRate || "", wageHours: initial.wageHours || "", wageSettlement: initial.wageSettlement || "",
       purchaseItem: initial.purchaseItem || "", purchaseUnitPrice: initial.purchaseUnitPrice || "", purchaseQty: initial.purchaseQty || "", purchaseTotal: initial.purchaseTotal || "",
       inventoryUsed: initial.inventoryUsed?.length ? initial.inventoryUsed : [], newParts: initial.newParts?.length ? initial.newParts : [] };
-    return { id: uid(), vehicleId: "", date: defaultDate || new Date().toISOString().slice(0,10), type: "repair", customer: "", phone: "", plate: "", vehicle: "",
+    return { id: uid(), vehicleId: "", date: defaultDate || localDateStr(), type: "repair", customer: "", phone: "", plate: "", vehicle: "",
       inventoryUsed: [], newParts: [], quoted: "", salePrice: "", saleCost: "", hours: "",
       wageName: "", wageRate: "", wageHours: "", wageSettlement: "",
       purchaseItem: "", purchaseUnitPrice: "", purchaseQty: "", purchaseTotal: "",
@@ -1650,9 +1659,9 @@ function SettingsView({ onReset, totalRecords, records, onImport, cloudCfg, onCl
   const [step, setStep] = useState(0);
   const [exportStart, setExportStart] = useState(() => {
     const d = new Date(); d.setDate(d.getDate() - 30);
-    return d.toISOString().slice(0, 10);
+    return localDateStr(d);
   });
-  const [exportEnd, setExportEnd] = useState(() => new Date().toISOString().slice(0, 10));
+  const [exportEnd, setExportEnd] = useState(() => localDateStr());
   const [exportMsg, setExportMsg] = useState("");
   const [importMsg, setImportMsg] = useState("");
   const fileInputRef = React.createRef();
