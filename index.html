@@ -354,6 +354,31 @@ function App() {
     }
   }, [cloudCfg]);
 
+  // Auto-poll every 30 seconds + refresh when tab becomes visible
+  useEffect(() => {
+    if (!cloudCfg || !loaded) return;
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        cloudLoad(cloudCfg).then(data => {
+          saveLocalCache(data);
+          setRecords(data);
+          setSyncStatus("ok");
+        }).catch(() => {});
+      }
+    }, 30000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && cloudCfg) {
+        cloudLoad(cloudCfg).then(data => {
+          saveLocalCache(data);
+          setRecords(data);
+          setSyncStatus("ok");
+        }).catch(() => {});
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); };
+  }, [cloudCfg, loaded]);
+
   const allRecords = useMemo(() => records ? Object.values(records).filter(v => Array.isArray(v)).flat() : [], [records]);
 
   const vehicleHistory = useMemo(() => {
