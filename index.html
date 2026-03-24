@@ -260,6 +260,17 @@ function typeLabel(t) {
   if (t === "purchase") return "采购";
   return t;
 }
+
+function paymentLabel(m) {
+  if (m === "cash") return "现金";
+  if (m === "card") return "刷卡";
+  if (m === "check") return "支票";
+  if (m === "zelle") return "Zelle";
+  if (m === "venmo") return "Venmo";
+  if (m === "cashapp") return "Cash App";
+  if (m === "other") return "其他";
+  return "";
+}
 function uid() { return "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 
 // Vehicle identity = customer + phone + vehicle combined
@@ -885,18 +896,30 @@ function RecordDetail({ record: r, onViewHistory, onEdit, onDelete }) {
         </div>
       )}
 
-      {/* Time & Notes */}
+      {/* Time, Payment, Repair Items & Notes */}
       <div style={S.section}>
         {r.type === "repair" && (
-          <div style={{display:"flex",gap:24}}>
+          <div style={{display:"flex",gap:24,marginBottom:r.repairItems||r.paymentMethod||r.note?16:0}}>
             <div>
               <p style={S.subLabel}>工作时长</p>
               <p style={S.bigNum}>{r.hours}<span style={S.bigUnit}>小时</span></p>
             </div>
           </div>
         )}
+        {r.repairItems && (
+          <div style={{paddingTop:12,borderTop:"1px solid rgba(255,255,255,0.06)",marginBottom:12}}>
+            <p style={S.subLabel}>维修项目</p>
+            <p style={S.noteText}>{r.repairItems}</p>
+          </div>
+        )}
+        {r.paymentMethod && (
+          <div style={{paddingTop:12,borderTop:"1px solid rgba(255,255,255,0.06)",marginBottom:12}}>
+            <p style={S.subLabel}>支付方式</p>
+            <p style={{fontSize:13,color:"#e4e4e7",margin:0}}>{paymentLabel(r.paymentMethod)}</p>
+          </div>
+        )}
         {r.note && (
-          <div style={{marginTop:16,paddingTop:16,borderTop:"1px solid rgba(255,255,255,0.06)"}}>
+          <div style={{paddingTop:12,borderTop:"1px solid rgba(255,255,255,0.06)"}}>
             <p style={S.subLabel}>备注</p>
             <p style={S.noteText}>{r.note}</p>
           </div>
@@ -963,11 +986,13 @@ function RecordForm({ initial, defaultDate, allRecords, onSave, onCancel }) {
     if (initial) return { ...initial, phone: initial.phone || "", plate: initial.plate || "", salePrice: initial.salePrice || "", saleCost: initial.saleCost || "",
       wageName: initial.wageName || "", wageRate: initial.wageRate || "", wageHours: initial.wageHours || "", wageSettlement: initial.wageSettlement || "",
       purchaseItem: initial.purchaseItem || "", purchaseUnitPrice: initial.purchaseUnitPrice || "", purchaseQty: initial.purchaseQty || "", purchaseTotal: initial.purchaseTotal || "",
+      paymentMethod: initial.paymentMethod || "", repairItems: initial.repairItems || "",
       inventoryUsed: initial.inventoryUsed?.length ? initial.inventoryUsed : [], newParts: initial.newParts?.length ? initial.newParts : [] };
     return { id: uid(), vehicleId: "", date: defaultDate || localDateStr(), type: "repair", customer: "", phone: "", plate: "", vehicle: "",
       inventoryUsed: [], newParts: [], quoted: "", salePrice: "", saleCost: "", hours: "",
       wageName: "", wageRate: "", wageHours: "", wageSettlement: "",
       purchaseItem: "", purchaseUnitPrice: "", purchaseQty: "", purchaseTotal: "",
+      paymentMethod: "", repairItems: "",
       note: "" };
   });
 
@@ -1138,6 +1163,13 @@ function RecordForm({ initial, defaultDate, allRecords, onSave, onCancel }) {
       {/* ── Repair-only sections ── */}
       {form.type === "repair" && <>
         <div style={S.section}>
+          <h3 style={S.secTitle}>维修项目</h3>
+          <div style={S.field}>
+            <textarea value={form.repairItems} onChange={e=>set("repairItems",e.target.value)} placeholder="例: 换机油、换刹车片、空调维修..." rows={2} style={{...S.input,resize:"vertical",lineHeight:1.5}}/>
+          </div>
+        </div>
+
+        <div style={S.section}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
             <h3 style={{...S.secTitle,margin:0}}>库存出库 <span style={{fontWeight:400,color:"#52525b",fontSize:11}}>（已在仓库的）</span></h3>
             <button style={S.smallAdd} onClick={()=>addItem("inventoryUsed")}><IPlus/> 添加</button>
@@ -1182,6 +1214,19 @@ function RecordForm({ initial, defaultDate, allRecords, onSave, onCancel }) {
             </div>
           </div>
           <div style={S.field}>
+            <label style={S.label}>支付方式</label>
+            <select value={form.paymentMethod} onChange={e=>set("paymentMethod",e.target.value)} style={S.input}>
+              <option value="">请选择</option>
+              <option value="cash">现金 Cash</option>
+              <option value="card">刷卡 Card</option>
+              <option value="check">支票 Check</option>
+              <option value="zelle">Zelle</option>
+              <option value="venmo">Venmo</option>
+              <option value="cashapp">Cash App</option>
+              <option value="other">其他</option>
+            </select>
+          </div>
+          <div style={S.field}>
             <label style={S.label}>备注</label>
             <textarea value={form.note} onChange={e=>set("note",e.target.value)} placeholder="维修内容、客户要求..." rows={3} style={{...S.input,resize:"vertical",lineHeight:1.5}}/>
           </div>
@@ -1200,7 +1245,20 @@ function RecordForm({ initial, defaultDate, allRecords, onSave, onCancel }) {
             <div style={S.field}>
               <label style={S.label}>成本价</label>
               <div style={S.dollarWrap}><span style={S.dollarSign}>$</span><input value={form.saleCost} onChange={e=>set("saleCost",e.target.value)} type="number" placeholder="0" style={{...S.input,paddingLeft:20}}/></div>
-            </div>
+          </div>
+          </div>
+          <div style={S.field}>
+            <label style={S.label}>支付方式</label>
+            <select value={form.paymentMethod} onChange={e=>set("paymentMethod",e.target.value)} style={S.input}>
+              <option value="">请选择</option>
+              <option value="cash">现金 Cash</option>
+              <option value="card">刷卡 Card</option>
+              <option value="check">支票 Check</option>
+              <option value="zelle">Zelle</option>
+              <option value="venmo">Venmo</option>
+              <option value="cashapp">Cash App</option>
+              <option value="other">其他</option>
+            </select>
           </div>
           <div style={S.field}>
             <label style={S.label}>备注</label>
@@ -1213,6 +1271,19 @@ function RecordForm({ initial, defaultDate, allRecords, onSave, onCancel }) {
       {form.type === "wage" && <>
         <div style={S.section}>
           <div style={S.field}>
+            <label style={S.label}>支付方式</label>
+            <select value={form.paymentMethod} onChange={e=>set("paymentMethod",e.target.value)} style={S.input}>
+              <option value="">请选择</option>
+              <option value="cash">现金 Cash</option>
+              <option value="card">刷卡 Card</option>
+              <option value="check">支票 Check</option>
+              <option value="zelle">Zelle</option>
+              <option value="venmo">Venmo</option>
+              <option value="cashapp">Cash App</option>
+              <option value="other">其他</option>
+            </select>
+          </div>
+          <div style={S.field}>
             <label style={S.label}>备注</label>
             <textarea value={form.note} onChange={e=>set("note",e.target.value)} placeholder="工作内容备注..." rows={3} style={{...S.input,resize:"vertical",lineHeight:1.5}}/>
           </div>
@@ -1222,6 +1293,19 @@ function RecordForm({ initial, defaultDate, allRecords, onSave, onCancel }) {
       {/* ── Purchase-only sections ── */}
       {form.type === "purchase" && <>
         <div style={S.section}>
+          <div style={S.field}>
+            <label style={S.label}>支付方式</label>
+            <select value={form.paymentMethod} onChange={e=>set("paymentMethod",e.target.value)} style={S.input}>
+              <option value="">请选择</option>
+              <option value="cash">现金 Cash</option>
+              <option value="card">刷卡 Card</option>
+              <option value="check">支票 Check</option>
+              <option value="zelle">Zelle</option>
+              <option value="venmo">Venmo</option>
+              <option value="cashapp">Cash App</option>
+              <option value="other">其他</option>
+            </select>
+          </div>
           <div style={S.field}>
             <label style={S.label}>备注</label>
             <textarea value={form.note} onChange={e=>set("note",e.target.value)} placeholder="采购备注..." rows={3} style={{...S.input,resize:"vertical",lineHeight:1.5}}/>
