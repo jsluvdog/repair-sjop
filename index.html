@@ -308,6 +308,7 @@ const IGear = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" 
 const IWarn = () => <Icon d="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" size={18}/>;
 const IPhone = () => <Icon d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z" size={13}/>;
 const ISearch = () => <Icon d="M11 3a8 8 0 100 16 8 8 0 000-16zM21 21l-4.35-4.35" size={16} sw={2}/>;
+const IAlert = () => <Icon d="M12 2L2 22h20L12 2zM12 10v4M12 18h.01" size={16} sw={2}/>;
 
 // ─── Main App ─────────────────────────────────────────────
 function App() {
@@ -415,6 +416,10 @@ function App() {
   const goRecord = (r) => { setSelRecord(r); setView("record"); setShowForm(false); setSelDate(r.date); };
   const goVehicleHistory = (vid) => { setSelVehicleId(vid); setView("vehicleHistory"); };
   const goSearch = () => { setView("search"); setShowForm(false); };
+  const goUnpaid = () => { setView("unpaid"); setShowForm(false); };
+
+  // Count unpaid records
+  const unpaidRecords = useMemo(() => allRecords.filter(r => r.hasUnpaid && Number(r.unpaidAmount||0) > 0), [allRecords]);
 
   const prevWeek = () => {
     const d = new Date(currentMonday);
@@ -517,7 +522,7 @@ function App() {
               else goWeek();
             }}><IBack/></button>
           )}
-          {(view === "settings" || view === "search") && (
+          {(view === "settings" || view === "search" || view === "unpaid") && (
             <button style={S.navBtn} onClick={goWeek}><IBack/></button>
           )}
           {showForm && (
@@ -531,7 +536,8 @@ function App() {
                  view === "day" ? fmtDate(selDate) :
                  view === "record" ? "记录详情" :
                  view === "settings" ? "设置" :
-                 view === "search" ? "搜索" : "车辆历史"}
+                 view === "search" ? "搜索" :
+                 view === "unpaid" ? "未结费用" : "车辆历史"}
               </h1>
               {/* Sync indicator */}
               {view === "week" && !showForm && (
@@ -544,7 +550,7 @@ function App() {
             {view === "week" && !showForm && (
               <p style={S.subtitle}>{fmtWeekRange(weekDates)} {thisWeek ? "· 本周" : ""}</p>
             )}
-            {view !== "week" && view !== "settings" && view !== "search" && !showForm && (
+            {view !== "week" && view !== "settings" && view !== "search" && view !== "unpaid" && !showForm && (
               <p style={S.subtitle}>
                 {view === "day" ? `共 ${(records[selDate]||[]).length} 条记录` :
                  view === "record" ? selRecord?.vehicle :
@@ -553,6 +559,7 @@ function App() {
             )}
             {view === "settings" && <p style={S.subtitle}>数据管理</p>}
             {view === "search" && <p style={S.subtitle}>按客户名、手机号、车型或车牌搜索</p>}
+            {view === "unpaid" && <p style={S.subtitle}>共 {unpaidRecords.length} 条未结记录</p>}
             {showForm && <p style={S.subtitle}>{selDate ? fmtDate(selDate) : "选择日期"}</p>}
           </div>
           <div style={{display:"flex",gap:6,alignItems:"center"}}>
@@ -563,6 +570,10 @@ function App() {
                 <button style={S.navBtn} onClick={nextWeek} title="下一周"><IChevronR/></button>
                 <div style={{width:1,height:20,background:"rgba(255,255,255,0.06)",margin:"0 2px"}}/>
                 <button style={S.navBtn} onClick={goSearch} title="搜索"><ISearch/></button>
+                <button style={{...S.navBtn,position:"relative"}} onClick={goUnpaid} title="未结费用">
+                  <IAlert/>
+                  {unpaidRecords.length > 0 && <div style={{position:"absolute",top:-4,right:-4,width:18,height:18,borderRadius:9,background:"#ef4444",fontSize:10,fontWeight:700,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'IBM Plex Mono',monospace"}}>{unpaidRecords.length}</div>}
+                </button>
                 <button style={S.navBtn} onClick={()=>setView("settings")} title="设置"><IGear/></button>
               </>
             )}
@@ -608,6 +619,9 @@ function App() {
             )}
             {view === "search" && (
               <SearchView allRecords={allRecords} onSelectRecord={goRecord} onSelectVehicle={goVehicleHistory}/>
+            )}
+            {view === "unpaid" && (
+              <UnpaidView unpaidRecords={unpaidRecords} allRecords={allRecords} onSelectRecord={goRecord}/>
             )}
           </>
         )}
@@ -777,6 +791,7 @@ function DayView({ records, onSelect }) {
                 <span style={{...S.metaI,color:"#f87171"}}>总额 ${Number(r.purchaseTotal||0).toLocaleString()}</span>
               </>}
             </div>
+            {r.hasUnpaid && <div style={{display:"flex",alignItems:"center",gap:5,marginTop:8,padding:"5px 8px",borderRadius:6,background:"rgba(248,113,113,0.08)",border:"1px solid rgba(248,113,113,0.15)"}}><span style={{fontSize:11.5,color:"#f87171",fontWeight:500}}>未结 ${Number(r.unpaidAmount||0).toLocaleString()}</span></div>}
             {r.note && <p style={S.rcNote}>{r.note}</p>}
           </button>
         );
@@ -922,6 +937,12 @@ function RecordDetail({ record: r, onViewHistory, onEdit, onDelete }) {
             <p style={{fontSize:13,color:"#e4e4e7",margin:0}}>{paymentLabel(r.paymentMethod)}</p>
           </div>
         )}
+        {r.hasUnpaid && (
+          <div style={{paddingTop:12,borderTop:"1px solid rgba(255,255,255,0.06)",marginBottom:12,background:"rgba(248,113,113,0.04)",margin:"-0px -18px",padding:"12px 18px",borderRadius:0}}>
+            <p style={{...S.subLabel,color:"#f87171"}}>未结费用</p>
+            <p style={{fontSize:18,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace",color:"#f87171",margin:0}}>${Number(r.unpaidAmount||0).toLocaleString()}</p>
+          </div>
+        )}
         {r.note && (
           <div style={{paddingTop:12,borderTop:"1px solid rgba(255,255,255,0.06)"}}>
             <p style={S.subLabel}>备注</p>
@@ -991,12 +1012,14 @@ function RecordForm({ initial, defaultDate, allRecords, onSave, onCancel }) {
       wageName: initial.wageName || "", wageRate: initial.wageRate || "", wageHours: initial.wageHours || "", wageSettlement: initial.wageSettlement || "",
       purchaseItem: initial.purchaseItem || "", purchaseUnitPrice: initial.purchaseUnitPrice || "", purchaseQty: initial.purchaseQty || "", purchaseTotal: initial.purchaseTotal || "",
       paymentMethod: initial.paymentMethod || "", repairItems: initial.repairItems || "",
+      hasUnpaid: initial.hasUnpaid || false, unpaidAmount: initial.unpaidAmount || "",
       inventoryUsed: initial.inventoryUsed?.length ? initial.inventoryUsed : [], newParts: initial.newParts?.length ? initial.newParts : [] };
     return { id: uid(), vehicleId: "", date: defaultDate || localDateStr(), type: "repair", customer: "", phone: "", plate: "", vehicle: "",
       inventoryUsed: [], newParts: [], quoted: "", salePrice: "", saleCost: "", hours: "",
       wageName: "", wageRate: "", wageHours: "", wageSettlement: "",
       purchaseItem: "", purchaseUnitPrice: "", purchaseQty: "", purchaseTotal: "",
       paymentMethod: "", repairItems: "",
+      hasUnpaid: false, unpaidAmount: "",
       note: "" };
   });
 
@@ -1037,6 +1060,7 @@ function RecordForm({ initial, defaultDate, allRecords, onSave, onCancel }) {
       salePrice: Number(form.salePrice)||0, saleCost: Number(form.saleCost)||0,
       wageRate: Number(form.wageRate)||0, wageHours: Number(form.wageHours)||0, wageSettlement: Number(form.wageSettlement)||0,
       purchaseUnitPrice: Number(form.purchaseUnitPrice)||0, purchaseQty: Number(form.purchaseQty)||0, purchaseTotal: Number(form.purchaseTotal)||0,
+      hasUnpaid: !!form.hasUnpaid, unpaidAmount: Number(form.unpaidAmount)||0,
       inventoryUsed: form.inventoryUsed.filter(i=>i.item.trim()).map(i=>({...i, qty:Number(i.qty)||1, cost:Number(i.cost)||0})),
       newParts: form.newParts.filter(i=>i.item.trim()).map(i=>({...i, qty:Number(i.qty)||1, cost:Number(i.cost)||0})),
     };
@@ -1230,6 +1254,21 @@ function RecordForm({ initial, defaultDate, allRecords, onSave, onCancel }) {
               <option value="other">其他</option>
             </select>
           </div>
+          {/* Unpaid toggle */}
+          <div style={S.field}>
+            <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer",fontSize:13,color:"#e4e4e7"}}>
+              <div onClick={()=>set("hasUnpaid",!form.hasUnpaid)} style={{width:44,height:24,borderRadius:12,background:form.hasUnpaid?"rgba(248,113,113,0.3)":"rgba(255,255,255,0.08)",border:form.hasUnpaid?"1px solid rgba(248,113,113,0.4)":"1px solid rgba(255,255,255,0.1)",position:"relative",cursor:"pointer",transition:"all 0.2s",flexShrink:0}}>
+                <div style={{width:18,height:18,borderRadius:9,background:form.hasUnpaid?"#f87171":"#52525b",position:"absolute",top:2,left:form.hasUnpaid?22:2,transition:"all 0.2s"}}/>
+              </div>
+              客户有未结费用
+            </label>
+          </div>
+          {form.hasUnpaid && (
+            <div style={S.field}>
+              <label style={S.label}>未结金额</label>
+              <div style={S.dollarWrap}><span style={S.dollarSign}>$</span><input value={form.unpaidAmount} onChange={e=>set("unpaidAmount",e.target.value)} type="number" placeholder="0" style={{...S.input,paddingLeft:20}}/></div>
+            </div>
+          )}
           <div style={S.field}>
             <label style={S.label}>备注</label>
             <textarea value={form.note} onChange={e=>set("note",e.target.value)} placeholder="维修内容、客户要求..." rows={3} style={{...S.input,resize:"vertical",lineHeight:1.5}}/>
@@ -1264,6 +1303,21 @@ function RecordForm({ initial, defaultDate, allRecords, onSave, onCancel }) {
               <option value="other">其他</option>
             </select>
           </div>
+          {/* Unpaid toggle */}
+          <div style={S.field}>
+            <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer",fontSize:13,color:"#e4e4e7"}}>
+              <div onClick={()=>set("hasUnpaid",!form.hasUnpaid)} style={{width:44,height:24,borderRadius:12,background:form.hasUnpaid?"rgba(248,113,113,0.3)":"rgba(255,255,255,0.08)",border:form.hasUnpaid?"1px solid rgba(248,113,113,0.4)":"1px solid rgba(255,255,255,0.1)",position:"relative",cursor:"pointer",transition:"all 0.2s",flexShrink:0}}>
+                <div style={{width:18,height:18,borderRadius:9,background:form.hasUnpaid?"#f87171":"#52525b",position:"absolute",top:2,left:form.hasUnpaid?22:2,transition:"all 0.2s"}}/>
+              </div>
+              客户有未结费用
+            </label>
+          </div>
+          {form.hasUnpaid && (
+            <div style={S.field}>
+              <label style={S.label}>未结金额</label>
+              <div style={S.dollarWrap}><span style={S.dollarSign}>$</span><input value={form.unpaidAmount} onChange={e=>set("unpaidAmount",e.target.value)} type="number" placeholder="0" style={{...S.input,paddingLeft:20}}/></div>
+            </div>
+          )}
           <div style={S.field}>
             <label style={S.label}>备注</label>
             <textarea value={form.note} onChange={e=>set("note",e.target.value)} placeholder="交易备注..." rows={3} style={{...S.input,resize:"vertical",lineHeight:1.5}}/>
@@ -1528,6 +1582,122 @@ tr:nth-child(even){background:#f8fafc}
 }
 
 // ─── Settings View ────────────────────────────────────────
+// ─── Unpaid View ──────────────────────────────────────────
+function UnpaidView({ unpaidRecords, allRecords, onSelectRecord }) {
+  // Group by customer
+  const grouped = useMemo(() => {
+    const map = {};
+    unpaidRecords.forEach(r => {
+      const key = (r.customer||"") + "|" + (r.phone||"");
+      if (!map[key]) {
+        map[key] = { customer: r.customer, phone: r.phone || "", records: [], totalUnpaid: 0 };
+      }
+      map[key].records.push(r);
+      map[key].totalUnpaid += Number(r.unpaidAmount || 0);
+    });
+    // Sort by total unpaid descending
+    return Object.values(map).sort((a, b) => b.totalUnpaid - a.totalUnpaid);
+  }, [unpaidRecords]);
+
+  const totalUnpaid = useMemo(() => unpaidRecords.reduce((s, r) => s + Number(r.unpaidAmount || 0), 0), [unpaidRecords]);
+
+  const [expandedKey, setExpandedKey] = useState(null);
+
+  // Get all records for a customer (not just unpaid)
+  const getCustomerAllRecords = (customer, phone) => {
+    return allRecords.filter(r => r.customer === customer && (r.phone||"") === phone).sort((a, b) => b.date.localeCompare(a.date));
+  };
+
+  if (unpaidRecords.length === 0) {
+    return (
+      <div style={{...S.emptyState,padding:"60px 20px"}}>
+        <div style={{fontSize:36,marginBottom:12}}>✓</div>
+        <p style={{color:"#4ade80",fontSize:16,fontWeight:500}}>没有未结费用</p>
+        <p style={{color:"#52525b",fontSize:13,marginTop:4}}>所有客户都已结清</p>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{...S.listCol,animation:"fadeUp 0.3s ease both"}}>
+      {/* Total unpaid summary */}
+      <div style={{...S.weekSummary,border:"1px solid rgba(248,113,113,0.15)",background:"rgba(248,113,113,0.04)"}}>
+        <div style={{textAlign:"center",padding:"8px 0"}}>
+          <span style={{fontSize:11,color:"#f87171",display:"block",marginBottom:4}}>总未结费用</span>
+          <span style={{fontSize:30,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace",color:"#f87171"}}>${totalUnpaid.toLocaleString()}</span>
+          <p style={{fontSize:12,color:"#71717a",marginTop:6}}>{grouped.length} 位客户 · {unpaidRecords.length} 条记录</p>
+        </div>
+      </div>
+
+      {/* Customer list */}
+      {grouped.map((g, i) => {
+        const gKey = g.customer + "|" + g.phone;
+        const isExpanded = expandedKey === gKey;
+        const custAllRecords = isExpanded ? getCustomerAllRecords(g.customer, g.phone) : [];
+
+        return (
+          <div key={gKey} style={{animation:"fadeUp 0.3s ease both",animationDelay:i*40+"ms"}}>
+            <button style={{...S.recordCard,marginBottom:0,border:"1px solid rgba(248,113,113,0.12)"}} onClick={() => setExpandedKey(isExpanded ? null : gKey)}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                <div style={{flex:1}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                    <span style={S.custName}>{g.customer}</span>
+                    <span style={{fontSize:10.5,color:"#f87171",background:"rgba(248,113,113,0.1)",padding:"1px 6px",borderRadius:4,fontWeight:500}}>{g.records.length}笔</span>
+                  </div>
+                  {g.phone && <div style={{display:"flex",alignItems:"center",gap:4,fontSize:12,color:"#71717a",marginBottom:2}}><IPhone/>{g.phone}</div>}
+                  {/* Show vehicle info from unpaid records */}
+                  {g.records.slice(0, 2).map((r, j) => (
+                    <div key={j} style={{fontSize:11.5,color:"#52525b",marginTop:2}}>
+                      {r.vehicle}{r.plate ? " · " + r.plate : ""} — {fmtDate(r.date)}
+                    </div>
+                  ))}
+                </div>
+                <div style={{textAlign:"right",flexShrink:0}}>
+                  <span style={{fontSize:10,color:"#f87171",display:"block"}}>未结</span>
+                  <span style={{fontSize:18,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace",color:"#f87171"}}>${g.totalUnpaid.toLocaleString()}</span>
+                </div>
+              </div>
+            </button>
+
+            {/* Expanded: show ALL records for this customer */}
+            {isExpanded && (
+              <div style={{borderLeft:"2px solid rgba(248,113,113,0.2)",marginLeft:16,paddingLeft:12,marginTop:6,marginBottom:10}}>
+                <p style={{fontSize:11,color:"#71717a",marginBottom:8}}>该客户全部记录（{custAllRecords.length} 条）：</p>
+                {custAllRecords.map((r, j) => {
+                  const isUnpaid = r.hasUnpaid && Number(r.unpaidAmount||0) > 0;
+                  return (
+                    <button key={r.id} style={{...S.recordCard,padding:12,marginBottom:6,animation:"fadeUp 0.25s ease both",animationDelay:j*30+"ms",
+                      ...(isUnpaid ? {border:"1px solid rgba(248,113,113,0.15)",background:"rgba(248,113,113,0.03)"} : {})
+                    }} onClick={() => onSelectRecord(r)}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                        <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                          <span style={{fontSize:12,fontFamily:"'IBM Plex Mono',monospace",color:"#a1a1aa"}}>{fmtDate(r.date)}</span>
+                          <span style={S.badge(r.type)}>{typeLabel(r.type)}</span>
+                          {isUnpaid && <span style={{fontSize:10,color:"#f87171",background:"rgba(248,113,113,0.12)",padding:"1px 5px",borderRadius:3,fontWeight:500}}>未结 ${Number(r.unpaidAmount||0).toLocaleString()}</span>}
+                        </div>
+                        <span style={{fontSize:13,fontWeight:600,fontFamily:"'IBM Plex Mono',monospace",color:"#4ade80"}}>${calcRevenue(r).toLocaleString()}</span>
+                      </div>
+                      <div style={{fontSize:11.5,color:"#71717a"}}>{r.vehicle}{r.plate ? " · " + r.plate : ""}</div>
+                      {r.paymentMethod && <div style={{fontSize:11,color:"#52525b",marginTop:3}}>支付: {paymentLabel(r.paymentMethod)}</div>}
+                      {r.note && <p style={{fontSize:11,color:"#3f3f46",margin:"4px 0 0",lineHeight:1.4}}>{r.note}</p>}
+                    </button>
+                  );
+                })}
+                {/* Customer summary */}
+                <div style={{display:"flex",gap:14,padding:"8px 0",fontSize:12,color:"#71717a",flexWrap:"wrap"}}>
+                  <span>总收入: <span style={{color:"#4ade80",fontFamily:"'IBM Plex Mono',monospace"}}>${custAllRecords.reduce((s,r)=>s+calcRevenue(r),0).toLocaleString()}</span></span>
+                  <span>总未结: <span style={{color:"#f87171",fontFamily:"'IBM Plex Mono',monospace"}}>${g.totalUnpaid.toLocaleString()}</span></span>
+                  <span>共 {custAllRecords.length} 次</span>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Search View ──────────────────────────────────────────
 function SearchView({ allRecords, onSelectRecord, onSelectVehicle }) {
   const [query, setQuery] = useState("");
