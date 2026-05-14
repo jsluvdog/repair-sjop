@@ -66,7 +66,9 @@ async function cloudLoad(cfg) {
   });
   if (!res.ok) throw new Error("GitHub load failed: " + res.status);
   const json = await res.json();
-  const content = atob(json.content.replace(/\n/g, ""));
+  // Decode base64 with proper UTF-8 support
+  const bytes = Uint8Array.from(atob(json.content.replace(/\n/g, "")), c => c.charCodeAt(0));
+  const content = new TextDecoder("utf-8").decode(bytes);
   const raw = JSON.parse(content);
   const record = {};
   Object.keys(raw).forEach(k => { if (Array.isArray(raw[k])) record[k] = raw[k]; });
@@ -86,7 +88,12 @@ async function getFileSha(cfg) {
 // GitHub API - save data.json to repo
 async function cloudSave(cfg, data) {
   const sha = await getFileSha(cfg);
-  const content = btoa(unescape(encodeURIComponent(JSON.stringify(data))));
+  // Encode with proper UTF-8 support
+  const jsonStr = JSON.stringify(data);
+  const bytes = new TextEncoder().encode(jsonStr);
+  var binary = "";
+  for (var i = 0; i < bytes.length; i++) { binary += String.fromCharCode(bytes[i]); }
+  const content = btoa(binary);
   const body = { message: "update data", content: content };
   if (sha) body.sha = sha;
   const res = await fetch("https://api.github.com/repos/" + cfg.owner + "/" + cfg.repo + "/contents/data.json", {
