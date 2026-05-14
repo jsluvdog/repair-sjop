@@ -39,11 +39,11 @@ input:focus,textarea:focus,select:focus{outline:none;border-color:rgba(96,165,25
 <script type="text/babel">
 const { useState, useEffect, useMemo, useCallback } = React;
 
-// ─── Cloud Storage (JSONBin + localStorage cache) ─────────
+// ─── Cloud Storage (GitHub API + localStorage cache) ──────
 const STORAGE_KEY = "shop-records-v3";
 const CONFIG_KEY = "shop-cloud-config";
 
-// Config: { apiKey, binId }
+// GitHub config: { token, owner, repo }
 function getCloudConfig() {
   try { return JSON.parse(localStorage.getItem(CONFIG_KEY)) || null; } catch { return null; }
 }
@@ -59,61 +59,47 @@ function saveLocalCache(data) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch(e) { console.error("Local save:", e); }
 }
 
-// JSONBin API
-function makeHeaders(apiKey, includeContentType) {
-  var h = {};
-  if (includeContentType) h["Content-Type"] = "application/json";
-  if (apiKey.startsWith("$2a")) { h["X-Master-Key"] = apiKey; } else { h["X-Access-Key"] = apiKey; }
-  return h;
-}
-
+// GitHub API - load data.json from repo
 async function cloudLoad(cfg) {
-  const res = await fetch("https://api.jsonbin.io/v3/b/" + cfg.binId + "/latest", {
-    headers: makeHeaders(cfg.apiKey, false)
+  const res = await fetch("https://api.github.com/repos/" + cfg.owner + "/" + cfg.repo + "/contents/data.json", {
+    headers: { "Authorization": "token " + cfg.token, "Accept": "application/vnd.github.v3+json" }
   });
-  if (!res.ok) {
-    let errMsg = "Cloud load failed: " + res.status;
-    try { const errBody = await res.json(); errMsg += " - " + (errBody.message || ""); } catch(ex) {}
-    throw new Error(errMsg);
-  }
+  if (!res.ok) throw new Error("GitHub load failed: " + res.status);
   const json = await res.json();
-  const raw = json.record || {};
-  // Only keep date keys with array values (strip metadata like _app, _empty, _created)
+  const content = atob(json.content.replace(/\n/g, ""));
+  const raw = JSON.parse(content);
   const record = {};
   Object.keys(raw).forEach(k => { if (Array.isArray(raw[k])) record[k] = raw[k]; });
   return record;
 }
 
+// GitHub API - get file SHA (needed for updates)
+async function getFileSha(cfg) {
+  const res = await fetch("https://api.github.com/repos/" + cfg.owner + "/" + cfg.repo + "/contents/data.json", {
+    headers: { "Authorization": "token " + cfg.token, "Accept": "application/vnd.github.v3+json" }
+  });
+  if (!res.ok) return null;
+  const json = await res.json();
+  return json.sha;
+}
+
+// GitHub API - save data.json to repo
 async function cloudSave(cfg, data) {
-  const saveData = data && Object.keys(data).length > 0 ? data : { _empty: true };
-  const res = await fetch("https://api.jsonbin.io/v3/b/" + cfg.binId, {
+  const sha = await getFileSha(cfg);
+  const content = btoa(unescape(encodeURIComponent(JSON.stringify(data))));
+  const body = { message: "update data", content: content };
+  if (sha) body.sha = sha;
+  const res = await fetch("https://api.github.com/repos/" + cfg.owner + "/" + cfg.repo + "/contents/data.json", {
     method: "PUT",
-    headers: makeHeaders(cfg.apiKey, true),
-    body: JSON.stringify(saveData)
+    headers: { "Authorization": "token " + cfg.token, "Content-Type": "application/json" },
+    body: JSON.stringify(body)
   });
   if (!res.ok) {
-    let errMsg = "Cloud save failed: " + res.status;
+    let errMsg = "GitHub save failed: " + res.status;
     try { const errBody = await res.json(); errMsg += " - " + (errBody.message || ""); } catch(ex) {}
     throw new Error(errMsg);
   }
   return true;
-}
-
-async function cloudCreateBin(apiKey) {
-  var headers = makeHeaders(apiKey, true);
-  headers["X-Bin-Name"] = "repair-shop-data";
-  const res = await fetch("https://api.jsonbin.io/v3/b", {
-    method: "POST",
-    headers: headers,
-    body: JSON.stringify({ _app: "repair-shop", _created: new Date().toISOString() })
-  });
-  if (!res.ok) {
-    let errMsg = "HTTP " + res.status;
-    try { const errBody = await res.json(); errMsg += " - " + (errBody.message || JSON.stringify(errBody)); } catch(ex) {}
-    throw new Error(errMsg);
-  }
-  const json = await res.json();
-  return json.metadata.id;
 }
 
 // Debounced cloud save
@@ -122,16 +108,16 @@ function debouncedCloudSave(cfg, data) {
   clearTimeout(_saveTimer);
   _saveTimer = setTimeout(async () => {
     try { await cloudSave(cfg, data); } catch(e) { console.error("Cloud sync:", e); }
-  }, 800);
+  }, 1500);
 }
 
-// Combined load: try cloud first, fall back to local cache
+// Combined load
 async function loadRecords() {
   const cfg = getCloudConfig();
-  if (cfg?.apiKey && cfg?.binId) {
+  if (cfg && cfg.token) {
     try {
       const data = await cloudLoad(cfg);
-      saveLocalCache(data); // update local cache
+      saveLocalCache(data);
       return data;
     } catch(e) {
       console.warn("Cloud load failed, using local cache:", e);
@@ -141,11 +127,11 @@ async function loadRecords() {
   return loadLocalCache();
 }
 
-// Combined save: save locally + sync to cloud
+// Combined save
 function saveRecords(data) {
   saveLocalCache(data);
   const cfg = getCloudConfig();
-  if (cfg?.apiKey && cfg?.binId) {
+  if (cfg && cfg.token) {
     debouncedCloudSave(cfg, data);
   }
 }
@@ -349,7 +335,7 @@ function App() {
   useEffect(() => {
     if (records && loaded) {
       saveLocalCache(records);
-      if (cloudCfg?.apiKey && cloudCfg?.binId) {
+      if (cloudCfg && cloudCfg.token) {
         setSyncStatus("syncing");
         clearTimeout(_saveTimer);
         _saveTimer = setTimeout(async () => {
@@ -1822,31 +1808,21 @@ function SearchView({ allRecords, onSelectRecord, onSelectVehicle }) {
 
 // ─── Cloud Setup Screen ───────────────────────────────────
 function CloudSetup({ onComplete }) {
-  const [apiKey, setApiKey] = useState("");
-  const [binId, setBinId] = useState("");
-  const [mode, setMode] = useState("new"); // new | existing
+  const [token, setToken] = useState("");
+  const [owner, setOwner] = useState("jsluvdog");
+  const [repo, setRepo] = useState("repair-sjop");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   const handleSetup = async () => {
-    if (!apiKey.trim()) { setError("请输入 Access Key"); return; }
+    if (!token.trim()) { setError("请输入 GitHub Token"); return; }
+    if (!owner.trim() || !repo.trim()) { setError("请输入用户名和仓库名"); return; }
     setLoading(true);
     setError("");
     try {
-      if (mode === "new") {
-        const newBinId = await cloudCreateBin(apiKey.trim());
-        // If there's existing local data, push it to cloud
-        const local = loadLocalCache();
-        if (local && Object.keys(local).length > 0) {
-          await cloudSave({ apiKey: apiKey.trim(), binId: newBinId }, local);
-        }
-        onComplete({ apiKey: apiKey.trim(), binId: newBinId });
-      } else {
-        if (!binId.trim()) { setError("请输入 Bin ID"); setLoading(false); return; }
-        // Verify connection
-        await cloudLoad({ apiKey: apiKey.trim(), binId: binId.trim() });
-        onComplete({ apiKey: apiKey.trim(), binId: binId.trim() });
-      }
+      const cfg = { token: token.trim(), owner: owner.trim(), repo: repo.trim() };
+      await cloudLoad(cfg);
+      onComplete(cfg);
     } catch(e) {
       setError("连接失败: " + e.message);
     }
@@ -1857,55 +1833,47 @@ function CloudSetup({ onComplete }) {
     <div style={{...S.root,display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}>
       <div style={{maxWidth:420,width:"100%",animation:"fadeUp 0.4s ease both"}}>
         <div style={{textAlign:"center",marginBottom:32}}>
-          <div style={{width:56,height:56,borderRadius:16,background:"linear-gradient(135deg,#3b82f6,#1e40af)",display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 16px"}}>
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 10h-1.26A8 8 0 109 20h9a5 5 0 000-10z"/></svg>
+          <div style={{width:56,height:56,borderRadius:16,background:"linear-gradient(135deg,#333,#111)",display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 16px"}}>
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="#fff"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.39.6.11.82-.26.82-.58v-2.03c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.75.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.84 2.81 1.31 3.5 1 .11-.78.42-1.31.76-1.61-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23A11.5 11.5 0 0112 5.8c1.02 0 2.05.14 3.01.41 2.28-1.55 3.29-1.23 3.29-1.23.66 1.66.25 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.48 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.21.7.82.58A12.01 12.01 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
           </div>
           <h1 style={{fontSize:22,fontWeight:600,color:"#fafafa",margin:"0 0 6px",fontFamily:"'Noto Sans SC',sans-serif"}}>云端同步设置</h1>
-          <p style={{fontSize:13,color:"#71717a",margin:0,lineHeight:1.5}}>连接 JSONBin.io 实现多设备数据共享</p>
+          <p style={{fontSize:13,color:"#71717a",margin:0,lineHeight:1.5}}>通过 GitHub 实现多设备数据共享</p>
         </div>
 
         <div style={S.section}>
-          <h3 style={S.secTitle}>第一步：获取 Access Key</h3>
+          <h3 style={S.secTitle}>GitHub Token</h3>
           <p style={{fontSize:12,color:"#71717a",margin:"0 0 12px",lineHeight:1.6}}>
-            1. 打开 <span style={{color:"#60a5fa"}}>jsonbin.io</span> 注册免费账号<br/>
-            2. 登录后点头像 → API Keys<br/>
-            3. 复制 Access Key 粘贴到下面
+            粘贴你的 GitHub Personal Access Token（以 github_pat_ 开头）
           </p>
-          <input value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="粘贴你的 Access Key" style={{...S.input,fontSize:14,marginBottom:12}} />
+          <input value={token} onChange={e => setToken(e.target.value)} placeholder="github_pat_xxxx..." style={{...S.input,fontSize:14,marginBottom:12}} />
         </div>
 
         <div style={{...S.section,marginTop:12}}>
-          <h3 style={S.secTitle}>第二步：选择模式</h3>
-          <div style={{display:"flex",gap:8,marginBottom:12}}>
-            <button onClick={()=>setMode("new")} style={{flex:1,padding:"10px 12px",borderRadius:10,border:mode==="new"?"1px solid rgba(96,165,250,0.4)":"1px solid rgba(255,255,255,0.06)",background:mode==="new"?"rgba(96,165,250,0.1)":"rgba(255,255,255,0.02)",color:mode==="new"?"#93c5fd":"#71717a",fontSize:13,fontFamily:"'Noto Sans SC',sans-serif",textAlign:"center",cursor:"pointer"}}>
-              全新开始<br/><span style={{fontSize:11,opacity:0.7}}>创建新的数据库</span>
-            </button>
-            <button onClick={()=>setMode("existing")} style={{flex:1,padding:"10px 12px",borderRadius:10,border:mode==="existing"?"1px solid rgba(96,165,250,0.4)":"1px solid rgba(255,255,255,0.06)",background:mode==="existing"?"rgba(96,165,250,0.1)":"rgba(255,255,255,0.02)",color:mode==="existing"?"#93c5fd":"#71717a",fontSize:13,fontFamily:"'Noto Sans SC',sans-serif",textAlign:"center",cursor:"pointer"}}>
-              连接已有<br/><span style={{fontSize:11,opacity:0.7}}>输入 Bin ID 加入</span>
-            </button>
-          </div>
-          {mode === "existing" && (
+          <h3 style={S.secTitle}>仓库信息</h3>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
             <div>
-              <p style={{fontSize:12,color:"#71717a",margin:"0 0 8px"}}>输入同事分享给你的 Bin ID：</p>
-              <input value={binId} onChange={e => setBinId(e.target.value)} placeholder="Bin ID（如 6xxx...）" style={{...S.input,fontSize:14}} />
+              <label style={{fontSize:11,color:"#71717a",marginBottom:4,display:"block"}}>GitHub 用户名</label>
+              <input value={owner} onChange={e => setOwner(e.target.value)} placeholder="jsluvdog" style={{...S.input,fontSize:14}} />
             </div>
-          )}
-          {mode === "new" && (
-            <p style={{fontSize:12,color:"#52525b",margin:0,lineHeight:1.5}}>将自动创建数据库。创建后在设置页面可以看到 Bin ID，分享给同事让他们选「连接已有」即可。</p>
-          )}
+            <div>
+              <label style={{fontSize:11,color:"#71717a",marginBottom:4,display:"block"}}>仓库名</label>
+              <input value={repo} onChange={e => setRepo(e.target.value)} placeholder="repair-sjop" style={{...S.input,fontSize:14}} />
+            </div>
+          </div>
+          <p style={{fontSize:11,color:"#52525b",margin:"8px 0 0"}}>同事连接时填同样的用户名和仓库名，用同一个 Token 即可</p>
         </div>
 
         {error && <p style={{color:"#f87171",fontSize:12.5,margin:"12px 0 0",textAlign:"center"}}>{error}</p>}
 
         <button onClick={handleSetup} disabled={loading} style={{
           width:"100%",marginTop:16,padding:"14px 20px",borderRadius:12,border:"none",
-          background:loading?"rgba(96,165,250,0.08)":"linear-gradient(135deg,#3b82f6,#2563eb)",
+          background:loading?"rgba(96,165,250,0.08)":"linear-gradient(135deg,#333,#111)",
           color:"#fff",fontSize:15,fontWeight:600,cursor:loading?"wait":"pointer",
           fontFamily:"'Noto Sans SC',sans-serif",display:"flex",alignItems:"center",justifyContent:"center",gap:8,
           opacity:loading?0.6:1,
         }}>
           {loading && <div style={{width:16,height:16,border:"2px solid rgba(255,255,255,0.3)",borderTopColor:"#fff",borderRadius:"50%",animation:"spin 0.7s linear infinite"}}/>}
-          {loading ? "连接中..." : mode === "new" ? "创建并连接" : "连接"}
+          {loading ? "连接中..." : "连接"}
         </button>
       </div>
     </div>
@@ -1963,8 +1931,8 @@ function SettingsView({ onReset, totalRecords, records, onImport, cloudCfg, onCl
               </span>
             </div>
             <div style={{background:"rgba(255,255,255,0.03)",borderRadius:8,padding:"10px 12px",marginBottom:12}}>
-              <p style={{fontSize:11,color:"#52525b",margin:"0 0 4px"}}>Bin ID（分享给同事加入同一数据库）：</p>
-              <p style={{fontSize:13,color:"#93c5fd",margin:0,fontFamily:"'IBM Plex Mono',monospace",wordBreak:"break-all",userSelect:"all"}}>{cloudCfg.binId}</p>
+              <p style={{fontSize:11,color:"#52525b",margin:"0 0 4px"}}>仓库：</p>
+              <p style={{fontSize:13,color:"#93c5fd",margin:0,fontFamily:"'IBM Plex Mono',monospace",wordBreak:"break-all",userSelect:"all"}}>{cloudCfg.owner}/{cloudCfg.repo}</p>
             </div>
             <div style={{display:"flex",gap:8}}>
               <button style={{
